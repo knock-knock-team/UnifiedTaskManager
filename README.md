@@ -1,5 +1,3 @@
-```
-
 ## Local Run (Current Working Stack)
 
 Use Docker Compose to start frontend + user-service + postgres + rabbitmq:
@@ -14,14 +12,20 @@ Then check:
 - User-service health: http://localhost:8082/healthz
 - User-service readiness: http://localhost:8082/readyz
 - User-service metrics: http://localhost:8082/metrics
-- RabbitMQ UI: http://localhost:15672 (guest / guest)
+- RabbitMQ UI: http://localhost:15672 (`guest / guest`)
 
 Stop stack:
 
 ```bash
 docker compose down
 ```
-vg-task-system/
+
+---
+
+# Project Structure
+
+```text
+UnifiedTaskManager/
 ├── README.md
 ├── go.work
 ├── Makefile
@@ -33,12 +37,12 @@ vg-task-system/
 │   │   ├── cmd/
 │   │   │   └── main.go
 │   │   ├── internal/
-│   │   │   ├── handler/        # HTTP handlers
-│   │   │   ├── middleware/     # auth, logging
-│   │   │   ├── service/        # бизнес-логика (агрегация)
-│   │   │   └── client/         # клиенты к другим сервисам
+│   │   │   ├── handler/
+│   │   │   ├── middleware/
+│   │   │   ├── service/
+│   │   │   └── client/
 │   │   ├── api/
-│   │   │   └── openapi.yaml    # OpenAPI (ВАЖНО)
+│   │   │   └── openapi.yaml
 │   │   ├── config/
 │   │   │   └── config.go
 │   │   ├── Dockerfile
@@ -48,11 +52,11 @@ vg-task-system/
 │   │   ├── cmd/
 │   │   │   └── main.go
 │   │   ├── internal/
-│   │   │   ├── handler/        # REST/gRPC handlers
-│   │   │   ├── service/        # бизнес-логика
-│   │   │   ├── repository/     # работа с БД
-│   │   │   ├── model/          # структуры (Task)
-│   │   │   └── event/          # публикация событий (RabbitMQ)
+│   │   │   ├── handler/
+│   │   │   ├── service/
+│   │   │   ├── repository/
+│   │   │   ├── model/
+│   │   │   └── event/
 │   │   ├── migrations/
 │   │   ├── config/
 │   │   ├── Dockerfile
@@ -80,9 +84,9 @@ vg-task-system/
 │   ├── notification-service/
 │   │   ├── cmd/
 │   │   ├── internal/
-│   │   │   ├── consumer/       # слушает RabbitMQ
+│   │   │   ├── consumer/
 │   │   │   ├── service/
-│   │   │   └── sender/         # email/push
+│   │   │   └── sender/
 │   │   ├── config/
 │   │   ├── Dockerfile
 │   │   └── go.mod
@@ -91,17 +95,18 @@ vg-task-system/
 │   │   ├── cmd/
 │   │   ├── internal/
 │   │   │   ├── consumer/
-│   │   │   ├── rules/          # rules engine
+│   │   │   ├── rules/
 │   │   │   └── service/
 │   │   ├── config/
 │   │   ├── Dockerfile
 │   │   └── go.mod
 │   │
-│   │
-│   ├── ml-service/             # Rust
-│   │   ├── src/                # события TaskCreated
-│   │   │                       # обработка задач
-│   │   │                       # LLM API
+│   ├── ml-service/
+│   │   ├── src/
+│   │   │   ├── main.rs
+│   │   │   ├── events.rs
+│   │   │   ├── llm.rs
+│   │   │   └── processor.rs
 │   │   ├── Cargo.toml
 │   │   └── Dockerfile
 │   │
