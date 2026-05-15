@@ -1,10 +1,33 @@
 ## Local Run (Current Working Stack)
 
-Use Docker Compose to start frontend + user-service + postgres + rabbitmq:
+Use Docker Compose with local `.env` values:
 
 ```bash
 docker compose up --build -d
 ```
+
+Before first run, copy `.env.example` to `.env` and set local values:
+
+```bash
+cp .env.example .env
+```
+
+Required local values in `.env`:
+
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `POSTGRES_PORT`
+- `RABBITMQ_USER`
+- `RABBITMQ_PASSWORD`
+- `RABBITMQ_PORT`
+- `RABBITMQ_MANAGEMENT_PORT`
+- `HTTP_ADDR`
+- `USE_IN_MEMORY`
+- `AUTO_MIGRATE`
+- `CORS_ALLOW_ORIGIN`
+
+Compose expects these variables from `.env` and does not use hardcoded fallback credentials.
 
 Then check:
 
