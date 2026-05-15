@@ -1,9 +1,9 @@
 import os
 import string
 
-from .agent import logger
+from agent import logger
 
-from ......libs.log_py import LoggerFactory
+from libs.log_py import LoggerFactory
 
 
 logger = LoggerFactory.get_logger("TaskAssistantServicePrompts", level=os.getenv("LOGGER_LEVEL"))
