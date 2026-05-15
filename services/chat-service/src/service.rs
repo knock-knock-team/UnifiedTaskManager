@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use chrono::Utc;
 use serde_json::json;
 use uuid::Uuid;
 
