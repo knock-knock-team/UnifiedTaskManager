@@ -220,6 +220,29 @@ h2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.profile-card-wide {
+  grid-column: 1 / -1;
+}
+
+.profile-link {
+  color: var(--txt);
+  text-decoration: none;
+  word-break: break-word;
+  font-size: 13px;
+}
+
+.profile-link:hover {
+  text-decoration: underline;
+}
+
+.profile-avatar {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 1px solid var(--line-soft);
+}
+
 .feature-grid > div,
 .scenario-grid > div,
 .task-card,
@@ -278,13 +301,20 @@ form {
 }
 
 input,
-button {
+button,
+textarea {
   min-height: 42px;
   border: 1px solid var(--line-soft);
   background: #0b0e12;
   color: var(--txt);
   padding: 8px 12px;
   font-size: 13px;
+}
+
+textarea {
+  min-height: 120px;
+  resize: vertical;
+  font-family: inherit;
 }
 
 button {
@@ -346,30 +376,34 @@ button:disabled {
   max-width: 520px;
 }
 
-.footer-note {
-  border-top: 1px solid var(--line);
-  background: rgba(0, 0, 0, 0.22);
+.profile-form {
+  max-width: 920px;
 }
 
-.footer-inner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding-top: 14px;
-  padding-bottom: 14px;
+.profile-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.profile-form-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.profile-form-grid span {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.footer-tools {
-  display: flex;
-  gap: 8px;
-  align-items: center;
+.profile-bio-field {
+  grid-column: 1 / -1;
 }
 
-.footer-tools input {
-  min-width: 240px;
+.profile-bio-field textarea {
+  width: 100%;
 }
 
 @media (max-width: 1100px) {
@@ -390,23 +424,77 @@ button:disabled {
   .feature-grid,
   .scenario-grid,
   .task-columns,
-  .profile-grid {
+  .profile-grid,
+  .profile-form-grid {
     grid-template-columns: 1fr;
   }
+}
 
-  .footer-inner {
-    flex-direction: column;
-    align-items: flex-start;
-  }
+/* Toast notifications */
+.toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  max-width: 400px;
+  padding: 12px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  animation: slideInUp 0.3s ease-out;
+  z-index: 1000;
+}
 
-  .footer-tools {
-    width: 100%;
-    flex-direction: column;
-    align-items: stretch;
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
   }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 
-  .footer-tools input {
-    min-width: 0;
-    width: 100%;
-  }
+.toast-success {
+  border-color: var(--ok);
+  background: rgba(89, 216, 155, 0.08);
+}
+
+.toast-error {
+  border-color: var(--err);
+  background: rgba(255, 106, 138, 0.08);
+}
+
+.toast-info {
+  border-color: #7f878f;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.toast-close {
+  min-height: auto;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+  font-size: 20px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+}
+
+.toast-close:hover {
+  color: var(--txt);
+}
+
+/* Unsaved changes indicator */
+.unsaved-indicator {
+  color: var(--err);
+  font-size: 18px;
+  margin-left: 4px;
 }

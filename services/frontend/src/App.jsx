@@ -13,10 +13,62 @@ const storage = {
   },
   set accessToken(value) {
     localStorage.setItem('accessToken', value || '');
+  },
+  get refreshToken() {
+    return localStorage.getItem('refreshToken') || '';
+  },
+  set refreshToken(value) {
+    localStorage.setItem('refreshToken', value || '');
+  },
+  clearTokens() {
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
   }
 };
 
-async function request(apiBase, accessToken, path, options = {}) {
+let refreshPromise = null;
+
+async function refreshAccessToken(apiBase, refreshToken) {
+  if (!refreshToken) {
+    throw new Error('invalid token');
+  }
+
+  // Prevent multiple simultaneous refresh attempts
+  if (refreshPromise) {
+    return refreshPromise;
+  }
+
+  refreshPromise = (async () => {
+    try {
+      const response = await fetch(`${apiBase}/v1/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken })
+      });
+
+      let data = {};
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Token refresh failed');
+      }
+
+      storage.accessToken = data.tokens.accessToken;
+      storage.refreshToken = data.tokens.refreshToken;
+      return data.tokens.accessToken;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
+}
+
+async function request(apiBase, accessToken, path, options = {}, onTokenRefresh) {
   const { method = 'GET', body, auth = false } = options;
   const headers = { 'Content-Type': 'application/json' };
 
@@ -24,11 +76,38 @@ async function request(apiBase, accessToken, path, options = {}) {
     headers.Authorization = `Bearer ${accessToken}`;
   }
 
-  const response = await fetch(`${apiBase}${path}`, {
+  let response = await fetch(`${apiBase}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined
   });
+
+  // Handle 401 Unauthorized - try to refresh token
+  if (response.status === 401 && auth && onTokenRefresh) {
+    const refreshToken = storage.refreshToken;
+    if (refreshToken) {
+      try {
+        const newAccessToken = await refreshAccessToken(apiBase, refreshToken);
+        onTokenRefresh(newAccessToken);
+
+        // Retry request with new token
+        headers.Authorization = `Bearer ${newAccessToken}`;
+        response = await fetch(`${apiBase}${path}`, {
+          method,
+          headers,
+          body: body ? JSON.stringify(body) : undefined
+        });
+      } catch (err) {
+        // Refresh failed - user must login again
+        storage.clearTokens();
+        onTokenRefresh(null);
+        throw new Error('Сессия истекла. Пожалуйста, авторизируйтесь снова.');
+      }
+    } else {
+      storage.clearTokens();
+      throw new Error('Сессия истекла. Пожалуйста, авторизируйтесь снова.');
+    }
+  }
 
   let data = {};
   try {
@@ -44,12 +123,162 @@ async function request(apiBase, accessToken, path, options = {}) {
   return data;
 }
 
+function normalizeURL(value) {
+  const trimmed = (value || '').trim();
+  if (!trimmed) {
+    return '';
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  return `https://${trimmed}`;
+}
+
+function Toast({ notification, onClose }) {
+  if (!notification) return null;
+  
+  return (
+    <div className={`toast toast-${notification.type}`}>
+      <span>{notification.message}</span>
+      <button type="button" className="toast-close" onClick={onClose}>&times;</button>
+    </div>
+  );
+}
+
+function CabinetSettings({ profile, accessToken, apiBase, showNotification, onProfileUpdate, onUpdateAccessToken }) {
+  const navigate = useNavigate();
+  const [formData, setFormData] = useState({
+    name: profile?.name || '',
+    bio: profile?.bio || '',
+    githubUrl: profile?.githubUrl || '',
+    linkedInUrl: profile?.linkedInUrl || '',
+    telegram: profile?.telegram || '',
+    websiteUrl: profile?.websiteUrl || '',
+    secondaryEmail: profile?.secondaryEmail || '',
+    password: ''
+  });
+  const [isDirty, setIsDirty] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleChange = (field, value) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+    setIsDirty(true);
+  };
+
+  const handleDiscard = () => {
+    setFormData({
+      name: profile?.name || '',
+      bio: profile?.bio || '',
+      githubUrl: profile?.githubUrl || '',
+      linkedInUrl: profile?.linkedInUrl || '',
+      telegram: profile?.telegram || '',
+      websiteUrl: profile?.websiteUrl || '',
+      secondaryEmail: profile?.secondaryEmail || '',
+      password: ''
+    });
+    setIsDirty(false);
+    showNotification('Изменения отменены', 'info');
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const payload = {};
+    if (formData.name.trim() !== (profile?.name || '')) payload.name = formData.name.trim();
+    if (formData.bio.trim() !== (profile?.bio || '')) payload.bio = formData.bio.trim();
+    if (normalizeURL(formData.githubUrl) !== (profile?.githubUrl || '')) payload.githubUrl = normalizeURL(formData.githubUrl);
+    if (normalizeURL(formData.linkedInUrl) !== (profile?.linkedInUrl || '')) payload.linkedInUrl = normalizeURL(formData.linkedInUrl);
+    if (formData.telegram.trim() !== (profile?.telegram || '')) payload.telegram = formData.telegram.trim();
+    if (normalizeURL(formData.websiteUrl) !== (profile?.websiteUrl || '')) payload.websiteUrl = normalizeURL(formData.websiteUrl);
+    if (formData.secondaryEmail.trim().toLowerCase() !== (profile?.secondaryEmail || '')) payload.secondaryEmail = formData.secondaryEmail.trim().toLowerCase();
+    if (formData.password.trim()) payload.password = formData.password.trim();
+
+    if (Object.keys(payload).length === 0) {
+      showNotification('Нет изменений для сохранения', 'info');
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const data = await request(apiBase, accessToken, '/v1/users/me', {
+        method: 'PATCH',
+        auth: true,
+        body: payload
+      }, onUpdateAccessToken);
+      showNotification('Профиль успешно обновлён', 'success');
+      onProfileUpdate(data);
+      setTimeout(() => navigate('/cabinet', { replace: true }), 1000);
+    } catch (error) {
+      showNotification(error.message || 'Ошибка при сохранении профиля', 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <section className="single-page wide-page">
+      <article className="pane cabinet-page">
+        <div className="cabinet-toolbar">
+          <button type="button" className="link-chip" onClick={() => navigate('/cabinet')}>Профиль</button>
+          <button type="button" className="link-chip active">Настройки профиля {isDirty && <span className="unsaved-indicator">*</span>}</button>
+        </div>
+
+        <div className="cabinet-content">
+          <p className="section-label">НАСТРОЙКИ ПРОФИЛЯ</p>
+          <h2>Изменить профиль</h2>
+          <p className="section-text">Основную почту менять нельзя. Можно добавить дополнительную почту и ссылки на публичные профили.</p>
+          <form onSubmit={handleSubmit} className="settings-form profile-form">
+            <div className="profile-form-grid">
+              <label>
+                <span>Имя</span>
+                <input value={formData.name} onChange={(e) => handleChange('name', e.target.value)} placeholder="Новое имя" />
+              </label>
+              <label>
+                <span>Дополнительная почта</span>
+                <input value={formData.secondaryEmail} onChange={(e) => handleChange('secondaryEmail', e.target.value)} type="email" placeholder="second.email@example.com" />
+              </label>
+              <label>
+                <span>GitHub</span>
+                <input value={formData.githubUrl} onChange={(e) => handleChange('githubUrl', e.target.value)} placeholder="https://github.com/username" />
+              </label>
+              <label>
+                <span>LinkedIn</span>
+                <input value={formData.linkedInUrl} onChange={(e) => handleChange('linkedInUrl', e.target.value)} placeholder="https://www.linkedin.com/in/username" />
+              </label>
+              <label>
+                <span>Telegram</span>
+                <input value={formData.telegram} onChange={(e) => handleChange('telegram', e.target.value)} placeholder="@username или https://t.me/username" />
+              </label>
+              <label>
+                <span>Сайт или портфолио</span>
+                <input value={formData.websiteUrl} onChange={(e) => handleChange('websiteUrl', e.target.value)} placeholder="https://example.com" />
+              </label>
+              <label className="profile-bio-field">
+                <span>О себе</span>
+                <textarea value={formData.bio} onChange={(e) => handleChange('bio', e.target.value)} placeholder="Коротко о себе, роли, опыте, интересах" rows={5} />
+              </label>
+              <label>
+                <span>Новый пароль</span>
+                <input value={formData.password} onChange={(e) => handleChange('password', e.target.value)} type="password" minLength={8} placeholder="Оставьте пустым, если не меняете пароль" />
+              </label>
+            </div>
+            <div className="row">
+              <button type="submit" disabled={!isDirty || isSaving}>{isSaving ? 'Сохраняется...' : `Сохранить изменения ${isDirty ? '*' : ''}`}</button>
+              <button type="button" className="ghost" disabled={!isDirty} onClick={handleDiscard}>Отменить изменения</button>
+              <button type="button" className="ghost" onClick={() => navigate('/cabinet')}>Назад к профилю</button>
+            </div>
+          </form>
+        </div>
+      </article>
+    </section>
+  );
+}
+
 function App() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [apiBase, setApiBase] = useState(storage.apiBase);
   const [accessToken, setAccessToken] = useState(storage.accessToken);
+  const apiBase = storage.apiBase;
 
   const [registerName, setRegisterName] = useState('');
   const [registerEmail, setRegisterEmail] = useState('');
@@ -59,10 +288,8 @@ function App() {
   const [loginPassword, setLoginPassword] = useState('');
 
   const [profile, setProfile] = useState(null);
-  const [profileName, setProfileName] = useState('');
-  const [profilePassword, setProfilePassword] = useState('');
-
-  const [status, setStatus] = useState({ ok: Boolean(accessToken), text: accessToken ? 'Личный кабинет готов' : 'Не авторизован' });
+  const [isProfileLoading, setIsProfileLoading] = useState(false);
+  const [notification, setNotification] = useState(null);
 
   const isAuthorized = Boolean(accessToken);
   const isProtectedPath = useMemo(() => {
@@ -70,16 +297,11 @@ function App() {
   }, [location.pathname]);
 
   useEffect(() => {
-    storage.apiBase = apiBase.trim();
-  }, [apiBase]);
-
-  useEffect(() => {
     storage.accessToken = accessToken;
   }, [accessToken]);
 
   useEffect(() => {
     if (!isAuthorized && isProtectedPath) {
-      setStatus({ ok: false, text: 'Для доступа к задачам и личному кабинету нужно войти' });
       navigate('/login', { replace: true });
     }
   }, [isAuthorized, isProtectedPath, navigate]);
@@ -90,17 +312,44 @@ function App() {
     }
   }, [isAuthorized, location.pathname, navigate]);
 
-  function setLoggedIn(token) {
-    setAccessToken(token);
-    if (!token) {
-      navigate('/', { replace: true });
+  useEffect(() => {
+    if (!notification) return;
+    const timer = setTimeout(() => setNotification(null), 3000);
+    return () => clearTimeout(timer);
+  }, [notification]);
+
+  function showNotification(message, type = 'success') {
+    setNotification({ message, type });
+  }
+
+  function setLoggedIn(tokens) {
+    if (tokens && tokens.accessToken) {
+      storage.accessToken = tokens.accessToken;
+      storage.refreshToken = tokens.refreshToken || '';
+      setAccessToken(tokens.accessToken);
+    } else {
+      storage.clearTokens();
+      setAccessToken('');
+      setProfile(null);
+    }
+  }
+
+  function onUpdateAccessToken(newToken) {
+    if (newToken) {
+      setAccessToken(newToken);
+    } else {
+      storage.clearTokens();
+      setAccessToken('');
+      setProfile(null);
+      showNotification('Сессия истекла. Пожалуйста, авторизируйтесь снова.', 'error');
+      navigate('/login', { replace: true });
     }
   }
 
   async function onRegister(event) {
     event.preventDefault();
     try {
-      const data = await request(apiBase, accessToken, '/v1/auth/register', {
+      const data = await request(apiBase, '', '/v1/auth/register', {
         method: 'POST',
         body: {
           name: registerName,
@@ -109,18 +358,20 @@ function App() {
         }
       });
       setProfile(data.user || null);
-      setProfileName(data.user?.name || '');
-      setLoggedIn(data.tokens?.accessToken || '');
-      setStatus({ ok: true, text: 'Регистрация успешна' });
+      setLoggedIn(data.tokens || {});
+      setRegisterName('');
+      setRegisterEmail('');
+      setRegisterPassword('');
+      showNotification('Регистрация успешна', 'success');
     } catch (error) {
-      setStatus({ ok: false, text: `Ошибка регистрации: ${error.message}` });
+      showNotification(error.message || 'Ошибка при регистрации', 'error');
     }
   }
 
   async function onLogin(event) {
     event.preventDefault();
     try {
-      const data = await request(apiBase, accessToken, '/v1/auth/login', {
+      const data = await request(apiBase, '', '/v1/auth/login', {
         method: 'POST',
         body: {
           email: loginEmail,
@@ -128,55 +379,43 @@ function App() {
         }
       });
       setProfile(data.user || null);
-      setProfileName(data.user?.name || '');
-      setLoggedIn(data.tokens?.accessToken || '');
-      setStatus({ ok: true, text: 'Логин успешен' });
+      setLoggedIn(data.tokens || {});
+      setLoginEmail('');
+      setLoginPassword('');
+      showNotification('Вход успешен', 'success');
     } catch (error) {
-      setStatus({ ok: false, text: `Ошибка входа: ${error.message}` });
+      showNotification(error.message || 'Ошибка при входе', 'error');
     }
   }
 
   async function loadProfile() {
+    if (!isAuthorized) return;
+    setIsProfileLoading(true);
     try {
-      const data = await request(apiBase, accessToken, '/v1/users/me', { auth: true });
+      const data = await request(apiBase, accessToken, '/v1/users/me', { auth: true }, onUpdateAccessToken);
       setProfile(data);
-      setProfileName(data.name || '');
-      setStatus({ ok: true, text: 'Личный кабинет загружен' });
     } catch (error) {
-      setStatus({ ok: false, text: `Ошибка личного кабинета: ${error.message}` });
+      showNotification(error.message || 'Ошибка при загрузке профиля', 'error');
+    } finally {
+      setIsProfileLoading(false);
     }
   }
 
-  async function onUpdateProfile(event) {
-    event.preventDefault();
-
-    const payload = {};
-    if (profileName.trim()) payload.name = profileName.trim();
-    if (profilePassword.trim()) payload.password = profilePassword.trim();
-
-    try {
-      const data = await request(apiBase, accessToken, '/v1/users/me', {
-        method: 'PATCH',
-        auth: true,
-        body: payload
-      });
-      setProfile(data);
-      setProfileName(data.name || '');
-      setProfilePassword('');
-      setStatus({ ok: true, text: 'Настройки профиля сохранены' });
-      navigate('/cabinet', { replace: true });
-    } catch (error) {
-      setStatus({ ok: false, text: `Ошибка обновления: ${error.message}` });
+  useEffect(() => {
+    if (isAuthorized && location.pathname.startsWith('/cabinet') && !profile) {
+      void loadProfile();
     }
-  }
+  }, [isAuthorized, location.pathname, profile]);
 
   function onLogout() {
-    setLoggedIn('');
-    setProfile(null);
-    setProfileName('');
-    setProfilePassword('');
+    setLoggedIn(null);
+    setRegisterName('');
+    setRegisterEmail('');
+    setRegisterPassword('');
+    setLoginEmail('');
+    setLoginPassword('');
+    showNotification('Вы вышли', 'info');
     navigate('/', { replace: true });
-    setStatus({ ok: false, text: 'Вы вышли из личного кабинета' });
   }
 
   const navItems = [
@@ -322,12 +561,30 @@ function App() {
           <div className="cabinet-content">
             <p className="section-label">ЛИЧНЫЙ КАБИНЕТ</p>
             <h2>Профиль пользователя</h2>
+            {profile?.avatarUrl && <img className="profile-avatar" src={profile.avatarUrl} alt="avatar" />}
             <div className="profile-grid public-profile">
               <div className="profile-card"><span>Имя</span><strong>{profile?.name || 'Не заполнено'}</strong></div>
               <div className="profile-card"><span>Email</span><strong>{profile?.email || 'Не заполнено'}</strong></div>
+              <div className="profile-card"><span>Доп. почта</span><strong>{profile?.secondaryEmail || 'Не заполнено'}</strong></div>
+              <div className="profile-card">
+                <span>GitHub</span>
+                {profile?.githubUrl ? <a className="profile-link" href={normalizeURL(profile.githubUrl)} target="_blank" rel="noreferrer">{profile.githubUrl}</a> : <strong>Не заполнено</strong>}
+              </div>
+              <div className="profile-card">
+                <span>LinkedIn</span>
+                {profile?.linkedInUrl ? <a className="profile-link" href={normalizeURL(profile.linkedInUrl)} target="_blank" rel="noreferrer">{profile.linkedInUrl}</a> : <strong>Не заполнено</strong>}
+              </div>
+              <div className="profile-card">
+                <span>Telegram</span>
+                <strong>{profile?.telegram || 'Не заполнено'}</strong>
+              </div>
+              <div className="profile-card">
+                <span>Сайт</span>
+                {profile?.websiteUrl ? <a className="profile-link" href={normalizeURL(profile.websiteUrl)} target="_blank" rel="noreferrer">{profile.websiteUrl}</a> : <strong>Не заполнено</strong>}
+              </div>
+              <div className="profile-card profile-card-wide"><span>О себе</span><strong>{profile?.bio || 'Не заполнено'}</strong></div>
             </div>
             <div className="row">
-              <button type="button" onClick={loadProfile}>Обновить профиль</button>
               <button type="button" className="ghost" onClick={() => navigate('/cabinet/settings')}>Открыть настройки профиля</button>
               <button type="button" className="ghost" onClick={onLogout}>Выйти</button>
             </div>
@@ -338,28 +595,26 @@ function App() {
   }
 
   function CabinetSettingsPage() {
-    return (
-      <section className="single-page wide-page">
-        <article className="pane cabinet-page">
-          <div className="cabinet-toolbar">
-            <button type="button" className="link-chip" onClick={() => navigate('/cabinet')}>Профиль</button>
-            <button type="button" className="link-chip active">Настройки профиля</button>
-          </div>
-
-          <div className="cabinet-content">
+    if (!profile) {
+      return (
+        <section className="single-page wide-page">
+          <article className="pane cabinet-page">
             <p className="section-label">НАСТРОЙКИ ПРОФИЛЯ</p>
-            <h2>Изменить имя и пароль</h2>
-            <form onSubmit={onUpdateProfile} className="settings-form">
-              <input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Новое имя" />
-              <input value={profilePassword} onChange={(event) => setProfilePassword(event.target.value)} type="password" minLength={8} placeholder="Новый пароль" />
-              <div className="row">
-                <button type="submit">Сохранить изменения</button>
-                <button type="button" className="ghost" onClick={() => navigate('/cabinet')}>Назад к профилю</button>
-              </div>
-            </form>
-          </div>
-        </article>
-      </section>
+            <p className="section-text">Загружаем профиль...</p>
+          </article>
+        </section>
+      );
+    }
+
+    return (
+      <CabinetSettings
+        profile={profile}
+        accessToken={accessToken}
+        apiBase={apiBase}
+        showNotification={showNotification}
+        onProfileUpdate={setProfile}
+        onUpdateAccessToken={onUpdateAccessToken}
+      />
     );
   }
 
@@ -388,15 +643,7 @@ function App() {
         </Routes>
       </main>
 
-      <footer className="footer-note">
-        <div className="container footer-inner">
-          <span>{status.text}</span>
-          <div className="footer-tools">
-            <input value={apiBase} onChange={(event) => setApiBase(event.target.value)} placeholder="API base URL" />
-            <button type="button" className="link-chip" onClick={() => navigate('/')}>На главную</button>
-          </div>
-        </div>
-      </footer>
+      <Toast notification={notification} onClose={() => setNotification(null)} />
     </div>
   );
 }
