@@ -10,6 +10,9 @@ pub enum MqError {
 
     #[error("request timed out")]
     Timeout,
+
+    #[error("{0}")]
+    Other(String),
 }
 
 pub type Result<T> = std::result::Result<T, MqError>;

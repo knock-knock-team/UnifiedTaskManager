@@ -1,15 +1,14 @@
-use std::{sync::atomic::{AtomicU64, Ordering}, time::Duration};
+use std::{sync::{Arc, atomic::{AtomicU64, Ordering}}, time::Duration};
 
 use futures_util::StreamExt;
 use lapin::{
-    message::Delivery,
-    options::*,
-    types::FieldTable,
-    BasicProperties, Channel, Connection, ConnectionProperties, Queue,
+    BasicProperties, Channel, Connection, ConnectionProperties, Queue, message::Delivery, options::*, types::FieldTable
 };
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::{decode_json, encode_json, types::PublishOptions, MqError, Result};
+use crate::error::MqError;
+
+use crate::{decode_json, encode_json, types::PublishOptions, Result};
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -50,13 +49,13 @@ fn apply_publish_options(mut props: BasicProperties, opts: &PublishOptions) -> B
 
 #[derive(Clone)]
 pub struct MqClient {
-    connection: Connection,
+    connection: Arc<Connection>,
 }
 
 impl MqClient {
-    pub async fn connect(uri: impl AsRef<str>) -> Result<Self> {
-        let connection = Connection::connect(uri.as_ref(), ConnectionProperties::default()).await?;
-        Ok(Self { connection })
+    pub async fn connect(uri: &str) -> Result<Self> {
+        let conn = Connection::connect(uri, ConnectionProperties::default()).await?;
+        Ok(Self {connection: Arc::new(conn)})
     }
 
     pub async fn channel(&self) -> Result<Channel> {
@@ -98,8 +97,8 @@ impl MqClient {
 
         let confirm = channel
             .basic_publish(
-                exchange,
-                routing_key,
+                exchange.into(),
+                routing_key.into(),
                 BasicPublishOptions::default(),
                 &body,
                 props,
@@ -138,8 +137,8 @@ impl MqClient {
         let consumer_tag = next_id("rpc-reply");
         let mut replies = channel
             .basic_consume(
-                reply_queue_name.as_str(),
-                consumer_tag.as_str(),
+                reply_queue_name.clone().into(),
+                consumer_tag.into(),
                 BasicConsumeOptions::default(),
                 FieldTable::default(),
             )
@@ -161,7 +160,7 @@ impl MqClient {
         )
         .await?;
 
-        let deadline = timeout.map(tokio::time::Instant::now +);
+        let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
 
         while let Some(delivery) = replies.next().await {
             let delivery = delivery?;
@@ -204,8 +203,8 @@ impl MqClient {
         let consumer_tag = next_id("rpc-server");
         let mut consumer = channel
             .basic_consume(
-                queue,
-                consumer_tag.as_str(),
+                queue.into(),
+                consumer_tag.into(),
                 BasicConsumeOptions::default(),
                 FieldTable::default(),
             )
@@ -251,8 +250,8 @@ impl MqClient {
             let body = encode_json(&resp)?;
             let confirm = channel
                 .basic_publish(
-                    "",
-                    reply_to.as_str(),
+                    "".into(),
+                    reply_to.into(),
                     BasicPublishOptions::default(),
                     &body,
                     BasicProperties::default()

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UserExistsRequest",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "user_id"
+  ],
+  "additionalProperties": false
+}
