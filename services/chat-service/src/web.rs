@@ -12,6 +12,7 @@ use validator::Validate;
 use crate::{
     domain::{ChatMessage, ChatRoom, ChatRoomDetails},
     error::AppError,
+    metrics,
     AppState,
 };
 
@@ -19,6 +20,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/readyz", get(readyz))
+        .route("/metrics", get(metrics::metrics))
         .route("/v1/chats/rooms", post(create_room).get(list_rooms))
         .route("/v1/chats/rooms/{room_id}", get(get_room))
         .route("/v1/chats/rooms/{room_id}/participants", post(add_participants))
