@@ -69,6 +69,17 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
   const [isSavingTask, setIsSavingTask] = useState(false);
+  const [pendingNotificationTaskId, setPendingNotificationTaskId] = useState('');
+  const [deadlineSettings, setDeadlineSettings] = useState({
+    notifyBeforeMinutes: 1440,
+    urgentBeforeMinutes: 120
+  });
+  const [deadlineSettingsForm, setDeadlineSettingsForm] = useState({
+    notifyBeforeMinutes: '1440',
+    urgentBeforeMinutes: '120'
+  });
+  const [isLoadingDeadlineSettings, setIsLoadingDeadlineSettings] = useState(false);
+  const [isSavingDeadlineSettings, setIsSavingDeadlineSettings] = useState(false);
   const [isGeneratingTaskContent, setIsGeneratingTaskContent] = useState(false);
   const [taskSuggestion, setTaskSuggestion] = useState(null);
   const [editorTaskSuggestion, setEditorTaskSuggestion] = useState(null);
@@ -82,6 +93,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [lastReorderNotificationTime, setLastReorderNotificationTime] = useState(0);
   const [memberDirectory, setMemberDirectory] = useState({});
+  const [selectedMemberStatsUserId, setSelectedMemberStatsUserId] = useState('');
+  const [openTaskMenuTaskId, setOpenTaskMenuTaskId] = useState('');
 
   // Загрузить поиск из localStorage (был сохранён ранее)
   useEffect(() => {
@@ -112,6 +125,17 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
 
   const activeTeam = useMemo(() => teams.find((item) => item.id === selectedTeamId) || null, [teams, selectedTeamId]);
   const activeProject = useMemo(() => projects.find((item) => item.id === selectedProjectId) || null, [projects, selectedProjectId]);
+  const canManageDeadlineSettings = useMemo(() => {
+    const userId = String(profile?.id || '').trim();
+    if (!userId) return false;
+    if (profile?.role === 'admin') return true;
+    if (String(activeTeam?.createdBy || '').trim() === userId) return true;
+    if (String(activeProject?.createdBy || '').trim() === userId) return true;
+    const teamRole = teamMembers.find((item) => String(item?.userId || '').trim() === userId)?.roleKey || '';
+    if (teamRole === 'owner' || teamRole === 'admin') return true;
+    const projectRole = projectMembers.find((item) => String(item?.userId || '').trim() === userId)?.roleKey || '';
+    return projectRole === 'owner' || projectRole === 'admin';
+  }, [activeProject, activeTeam, profile, projectMembers, teamMembers]);
   const lookupUserById = useCallback(async (userId) => {
     const id = String(userId || '').trim();
     if (!id) return null;
@@ -255,6 +279,92 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
     return map;
   }, [boardColumns, filteredTasks]);
+
+  const isTaskDone = useCallback((task) => {
+    if (!task) return false;
+    if (task.completedAt) return true;
+    return String(task.status || '').trim() === 'done';
+  }, []);
+
+  const isTaskOverdue = useCallback((task) => {
+    if (!task?.dueAt || isTaskDone(task)) return false;
+    const dueAtTime = new Date(task.dueAt).getTime();
+    if (!Number.isFinite(dueAtTime)) return false;
+    return dueAtTime < Date.now();
+  }, [isTaskDone]);
+
+  const memberStats = useMemo(() => {
+    const byUserId = new Map();
+
+    const ensureMember = (userId, fallbackName = '') => {
+      const normalizedUserId = String(userId || '').trim();
+      if (!normalizedUserId) return null;
+      if (!byUserId.has(normalizedUserId)) {
+        const profileItem = memberDirectory[normalizedUserId] || {};
+        const displayName = String(
+          profileItem?.name || profileItem?.tag || fallbackName || normalizedUserId
+        ).trim() || normalizedUserId;
+        byUserId.set(normalizedUserId, {
+          userId: normalizedUserId,
+          displayName,
+          assignedCount: 0,
+          completedCount: 0,
+          overdueCount: 0,
+          activeCount: 0,
+          completedTasks: [],
+          overdueTasks: [],
+          activeTasks: []
+        });
+      }
+      return byUserId.get(normalizedUserId);
+    };
+
+    assigneeOptions.forEach((member) => {
+      ensureMember(member.userId, member.displayName);
+    });
+
+    tasks.forEach((task) => {
+      const assigneeUserId = String(task?.assigneeUserId || '').trim();
+      if (!assigneeUserId) return;
+      const member = ensureMember(
+        assigneeUserId,
+        task.assigneeName || assigneeLabelById.get(assigneeUserId) || assigneeUserId
+      );
+      if (!member) return;
+      member.assignedCount += 1;
+      if (isTaskDone(task)) {
+        member.completedCount += 1;
+        member.completedTasks.push(task);
+        return;
+      }
+      if (isTaskOverdue(task)) {
+        member.overdueCount += 1;
+        member.overdueTasks.push(task);
+        return;
+      }
+      member.activeCount += 1;
+      member.activeTasks.push(task);
+    });
+
+    return Array.from(byUserId.values()).sort((left, right) => left.displayName.localeCompare(right.displayName));
+  }, [assigneeLabelById, assigneeOptions, isTaskDone, isTaskOverdue, memberDirectory, tasks]);
+
+  const selectedMemberStats = useMemo(
+    () => memberStats.find((item) => item.userId === selectedMemberStatsUserId) || null,
+    [memberStats, selectedMemberStatsUserId]
+  );
+  const selectedMemberCompletionRate = useMemo(() => {
+    if (!selectedMemberStats || selectedMemberStats.assignedCount === 0) return 0;
+    return Math.round((selectedMemberStats.completedCount / selectedMemberStats.assignedCount) * 100);
+  }, [selectedMemberStats]);
+
+  const isUrgentDeadline = useCallback((task) => {
+    if (!task?.dueAt || isTaskDone(task)) return false;
+    const dueTime = new Date(task.dueAt).getTime();
+    if (!Number.isFinite(dueTime)) return false;
+    const minutesLeft = (dueTime - Date.now()) / 60000;
+    return minutesLeft >= 0 && minutesLeft <= Number(deadlineSettings.urgentBeforeMinutes || 0);
+  }, [deadlineSettings.urgentBeforeMinutes, isTaskDone]);
 
   const resetTaskForm = useCallback((nextColumnId = '') => {
     setTaskForm({
@@ -454,6 +564,38 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
   }, [accessToken, loadTasks, onUpdateAccessToken, selectedProjectId, selectedTeamId, showNotification, taskApiBase]);
 
+  const loadDeadlineSettings = useCallback(async (teamId, projectId) => {
+    if (!accessToken || !teamId || !projectId) return;
+    setIsLoadingDeadlineSettings(true);
+    try {
+      const data = await request(
+        taskApiBase,
+        accessToken,
+        `/v1/projects/${encodeURIComponent(projectId)}/notification-settings`,
+        { auth: true, headers: { 'X-Team-Id': teamId } },
+        onUpdateAccessToken
+      );
+      const next = {
+        notifyBeforeMinutes: Number(data.notifyBeforeMinutes || 1440),
+        urgentBeforeMinutes: Number(data.urgentBeforeMinutes || 120)
+      };
+      setDeadlineSettings(next);
+      setDeadlineSettingsForm({
+        notifyBeforeMinutes: String(next.notifyBeforeMinutes),
+        urgentBeforeMinutes: String(next.urgentBeforeMinutes)
+      });
+    } catch {
+      const fallback = { notifyBeforeMinutes: 1440, urgentBeforeMinutes: 120 };
+      setDeadlineSettings(fallback);
+      setDeadlineSettingsForm({
+        notifyBeforeMinutes: String(fallback.notifyBeforeMinutes),
+        urgentBeforeMinutes: String(fallback.urgentBeforeMinutes)
+      });
+    } finally {
+      setIsLoadingDeadlineSettings(false);
+    }
+  }, [accessToken, onUpdateAccessToken, taskApiBase]);
+
   useEffect(() => {
     void loadTeams();
     void loadPendingInvites();
@@ -486,7 +628,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     void loadColumns(selectedTeamId, selectedProjectId);
     void loadTasks(selectedTeamId, selectedProjectId);
     void loadProjectDirectory(selectedTeamId, selectedProjectId);
-  }, [closeTaskEditor, selectedProjectId, selectedTeamId, loadColumns, loadProjectDirectory, loadTasks]);
+    void loadDeadlineSettings(selectedTeamId, selectedProjectId);
+  }, [closeTaskEditor, selectedProjectId, selectedTeamId, loadColumns, loadDeadlineSettings, loadProjectDirectory, loadTasks]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -506,6 +649,39 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (!editorTask) return;
     void loadTaskComments(editorTask.id);
   }, [editorTask, loadTaskComments]);
+
+  useEffect(() => {
+    if (!selectedMemberStatsUserId) return;
+    if (memberStats.some((item) => item.userId === selectedMemberStatsUserId)) return;
+    setSelectedMemberStatsUserId('');
+  }, [memberStats, selectedMemberStatsUserId]);
+
+  useEffect(() => {
+    if (!openTaskMenuTaskId) return;
+    if (tasks.some((item) => item.id === openTaskMenuTaskId)) return;
+    setOpenTaskMenuTaskId('');
+  }, [openTaskMenuTaskId, tasks]);
+
+  useEffect(() => {
+    if (!openTaskMenuTaskId) return;
+    const handlePointerDown = (event) => {
+      if (event.target instanceof Element && event.target.closest('.task-card-menu-shell')) {
+        return;
+      }
+      setOpenTaskMenuTaskId('');
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setOpenTaskMenuTaskId('');
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [openTaskMenuTaskId]);
 
   const handleCreateTeam = async (event) => {
     event.preventDefault();
@@ -1103,6 +1279,100 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
   };
 
+  const handleToggleTaskDone = async (task) => {
+    const taskId = String(task?.id || '').trim();
+    if (!taskId || !selectedTeamId || !selectedProjectId) return;
+    const nextCompleted = !isTaskDone(task);
+    try {
+      const updated = await request(taskApiBase, accessToken, `/v1/tasks/${taskId}`, {
+        method: 'PATCH',
+        auth: true,
+        headers: { 'X-Team-Id': selectedTeamId },
+        body: { completed: nextCompleted }
+      }, onUpdateAccessToken);
+      if (editorTask?.id === taskId) {
+        setEditorTask(updated);
+      }
+      showNotification(nextCompleted ? 'Задача отмечена выполненной' : 'Отметка выполнения снята', 'success');
+      await loadTasks(selectedTeamId, selectedProjectId);
+    } catch (error) {
+      showNotification(error.message || 'Не удалось обновить состояние задачи', 'error');
+    }
+  };
+
+  const handleSendDeadlineNotification = async (task) => {
+    if (!task || !selectedTeamId) return;
+    if (isTaskDone(task)) {
+      showNotification('Для выполненной задачи уведомления не отправляются', 'error');
+      return;
+    }
+    if (!task.dueAt) {
+      showNotification('У задачи нет дедлайна', 'error');
+      return;
+    }
+    if (!task.assigneeUserId) {
+      showNotification('У задачи не назначен исполнитель', 'error');
+      return;
+    }
+    setPendingNotificationTaskId(task.id);
+    try {
+      await request(taskApiBase, accessToken, `/v1/tasks/${encodeURIComponent(task.id)}/deadline-notification`, {
+        method: 'POST',
+        auth: true,
+        headers: { 'X-Team-Id': selectedTeamId }
+      }, onUpdateAccessToken);
+      showNotification('Уведомление о дедлайне отправлено', 'success');
+    } catch (error) {
+      showNotification(error.message || 'Не удалось отправить уведомление', 'error');
+    } finally {
+      setPendingNotificationTaskId('');
+    }
+  };
+
+  const handleDeadlineSettingsSubmit = async (event) => {
+    event.preventDefault();
+    if (!selectedTeamId || !selectedProjectId) return;
+    const notifyBeforeMinutes = Number(deadlineSettingsForm.notifyBeforeMinutes);
+    const urgentBeforeMinutes = Number(deadlineSettingsForm.urgentBeforeMinutes);
+    if (!Number.isFinite(notifyBeforeMinutes) || notifyBeforeMinutes < 1) {
+      showNotification('Укажите время авто-уведомления больше 0 минут', 'error');
+      return;
+    }
+    if (!Number.isFinite(urgentBeforeMinutes) || urgentBeforeMinutes < 0 || urgentBeforeMinutes > notifyBeforeMinutes) {
+      showNotification('Горящий дедлайн должен быть от 0 до времени авто-уведомления', 'error');
+      return;
+    }
+    setIsSavingDeadlineSettings(true);
+    try {
+      const data = await request(
+        taskApiBase,
+        accessToken,
+        `/v1/projects/${encodeURIComponent(selectedProjectId)}/notification-settings`,
+        {
+          method: 'PATCH',
+          auth: true,
+          headers: { 'X-Team-Id': selectedTeamId },
+          body: { notifyBeforeMinutes, urgentBeforeMinutes }
+        },
+        onUpdateAccessToken
+      );
+      const next = {
+        notifyBeforeMinutes: Number(data.notifyBeforeMinutes || notifyBeforeMinutes),
+        urgentBeforeMinutes: Number(data.urgentBeforeMinutes || urgentBeforeMinutes)
+      };
+      setDeadlineSettings(next);
+      setDeadlineSettingsForm({
+        notifyBeforeMinutes: String(next.notifyBeforeMinutes),
+        urgentBeforeMinutes: String(next.urgentBeforeMinutes)
+      });
+      showNotification('Настройки дедлайнов сохранены', 'success');
+    } catch (error) {
+      showNotification(error.message || 'Не удалось сохранить настройки дедлайнов', 'error');
+    } finally {
+      setIsSavingDeadlineSettings(false);
+    }
+  };
+
   const handleMoveTask = async (task, targetColumnId) => {
     if (!selectedTeamId || !selectedProjectId || !targetColumnId) return;
     try {
@@ -1323,6 +1593,42 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
             </form>
           </details>
 
+          {selectedProjectId && (
+            <details className="sidebar-card" open={canManageDeadlineSettings}>
+              <summary>Авто-дедлайны</summary>
+              <form className="sidebar-form" onSubmit={handleDeadlineSettingsSubmit}>
+                <label>
+                  <span>Уведомить за, минут</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="43200"
+                    value={deadlineSettingsForm.notifyBeforeMinutes}
+                    onChange={(event) => setDeadlineSettingsForm((prev) => ({ ...prev, notifyBeforeMinutes: event.target.value }))}
+                    disabled={!canManageDeadlineSettings || isLoadingDeadlineSettings}
+                  />
+                </label>
+                <label>
+                  <span>Горящий дедлайн за, минут</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max={deadlineSettingsForm.notifyBeforeMinutes || 43200}
+                    value={deadlineSettingsForm.urgentBeforeMinutes}
+                    onChange={(event) => setDeadlineSettingsForm((prev) => ({ ...prev, urgentBeforeMinutes: event.target.value }))}
+                    disabled={!canManageDeadlineSettings || isLoadingDeadlineSettings}
+                  />
+                </label>
+                <button type="submit" disabled={!canManageDeadlineSettings || isSavingDeadlineSettings || isLoadingDeadlineSettings}>
+                  {isSavingDeadlineSettings ? 'Сохраняем...' : 'Сохранить настройки'}
+                </button>
+                {!canManageDeadlineSettings && (
+                  <p className="muted-caption">Настройки доступны создателю и администратору.</p>
+                )}
+              </form>
+            </details>
+          )}
+
           <details className="sidebar-card">
             <summary>Входящие приглашения</summary>
             {pendingInvites.length === 0 ? <p className="muted-caption">Нет приглашений</p> : pendingInvites.map((invite) => (
@@ -1331,6 +1637,38 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                 <button type="button" className="compact-btn" onClick={() => void handleAcceptInvite(invite.id)}>Принять</button>
               </div>
             ))}
+          </details>
+
+          <details className="sidebar-card">
+            <summary>Статистика участников</summary>
+            {!selectedProjectId ? (
+              <p className="muted-caption">Выберите проект, чтобы увидеть статистику по задачам.</p>
+            ) : memberStats.length === 0 ? (
+              <p className="muted-caption">Пока нет участников или назначенных задач.</p>
+            ) : (
+              <div className="list-block">
+                {memberStats.map((member) => (
+                  <article key={member.userId} className="list-item compact-item">
+                    <div>
+                      <strong>{member.displayName}</strong>
+                      <p>
+                        Выполнил: {member.completedCount}
+                        <br />
+                        Просрочил: {member.overdueCount}
+                        <br />
+                        Активных: {member.activeCount}
+                      </p>
+                    </div>
+                    <button type="button" className="compact-btn" onClick={() => setSelectedMemberStatsUserId(member.userId)}>
+                      Открыть
+                    </button>
+                  </article>
+                ))}
+              </div>
+            )}
+            {selectedProjectId && (
+              <p className="muted-caption">Статистика считается по задачам текущего проекта.</p>
+            )}
           </details>
 
           <details className="sidebar-card sidebar-card-compact roles-card">
@@ -1659,45 +1997,103 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                   onDrop={(event) => void onColumnDrop(event, column.id)}
                 >
                   {items.length === 0 ? <p className="empty-state">Пусто</p> : items.map((task) => (
-                    <article key={task.id} className={`task-card ${draggingTaskId === task.id ? 'dragging' : ''}`} draggable onDragStart={(event) => onTaskDragStart(event, task.id)} onDragEnd={onTaskDragEnd}>
+                    <article key={task.id} className={`task-card ${draggingTaskId === task.id ? 'dragging' : ''} ${isUrgentDeadline(task) ? 'urgent-deadline' : ''} ${isTaskDone(task) ? 'completed' : ''}`} draggable onDragStart={(event) => onTaskDragStart(event, task.id)} onDragEnd={onTaskDragEnd}>
                       <div className="task-card-top">
-                        {inlineEditTaskId === task.id ? (
-                          <input
-                            type="text"
-                            autoFocus
-                            value={inlineEditTitle}
-                            onChange={(event) => setInlineEditTitle(event.target.value)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                void handleInlineEditSave(task.id);
-                              } else if (event.key === 'Escape') {
-                                handleInlineEditCancel();
-                              }
-                            }}
-                            onBlur={() => void handleInlineEditSave(task.id)}
-                            className="inline-edit-input"
-                            placeholder="Название задачи"
-                          />
-                        ) : (
-                          <strong
-                            onDoubleClick={() => handleInlineEditStart(task)}
-                            title="Двойной клик для редактирования"
-                            aria-label="Название задачи"
+                        <div className="task-card-title-row">
+                          <button
+                            type="button"
+                            className={`task-completion-toggle ${isTaskDone(task) ? 'done' : ''}`}
+                            onClick={() => void handleToggleTaskDone(task)}
+                            title={isTaskDone(task) ? 'Снять отметку выполнения' : 'Отметить выполненной'}
+                            aria-label={isTaskDone(task) ? 'Снять отметку выполнения' : 'Отметить выполненной'}
                           >
-                            {task.title}
-                          </strong>
-                        )}
-                        <span>{priorityLabel(task.priority)}</span>
+                            <span className="task-completion-box" aria-hidden="true">
+                              {isTaskDone(task) && <span className="task-completion-mark" />}
+                            </span>
+                          </button>
+                          {inlineEditTaskId === task.id ? (
+                            <input
+                              type="text"
+                              autoFocus
+                              value={inlineEditTitle}
+                              onChange={(event) => setInlineEditTitle(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  void handleInlineEditSave(task.id);
+                                } else if (event.key === 'Escape') {
+                                  handleInlineEditCancel();
+                                }
+                              }}
+                              onBlur={() => void handleInlineEditSave(task.id)}
+                              className="inline-edit-input"
+                              placeholder="Название задачи"
+                            />
+                          ) : (
+                            <strong
+                              className="task-card-title"
+                              onDoubleClick={() => handleInlineEditStart(task)}
+                              title="Двойной клик для редактирования"
+                              aria-label="Название задачи"
+                            >
+                              {task.title}
+                            </strong>
+                          )}
+                        </div>
+                        <div className="task-card-top-meta">
+                          <span className="task-priority-badge">{priorityLabel(task.priority)}</span>
+                          <div className="task-card-menu-shell">
+                            <button
+                              type="button"
+                              className="ghost task-card-menu-trigger"
+                              onClick={() => setOpenTaskMenuTaskId((current) => (current === task.id ? '' : task.id))}
+                              title="Действия"
+                              aria-label="Действия"
+                            >
+                              ...
+                            </button>
+                            {openTaskMenuTaskId === task.id && (
+                              <div className="task-card-menu">
+                                <button
+                                  type="button"
+                                  className="task-card-menu-item"
+                                  onClick={() => {
+                                    setOpenTaskMenuTaskId('');
+                                    void handleSendDeadlineNotification(task);
+                                  }}
+                                  disabled={!task.dueAt || !task.assigneeUserId || pendingNotificationTaskId === task.id || isTaskDone(task)}
+                                >
+                                  {pendingNotificationTaskId === task.id ? 'Отправляем...' : 'Напомнить о дедлайне'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="task-card-menu-item"
+                                  onClick={() => {
+                                    setOpenTaskMenuTaskId('');
+                                    handleEditTask(task);
+                                  }}
+                                >
+                                  Изменить
+                                </button>
+                                <button
+                                  type="button"
+                                  className="task-card-menu-item danger"
+                                  onClick={() => {
+                                    setOpenTaskMenuTaskId('');
+                                    void handleDeleteTask(task.id);
+                                  }}
+                                >
+                                  Удалить
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       </div>
                       {task.description && <p>{task.description}</p>}
                       <div className="task-card-meta">
                         {task.dueAt ? <span>Срок: {new Date(task.dueAt).toLocaleString()}</span> : <span>Без срока</span>}
                         {task.assigneeUserId ? <span>Исполнитель: {task.assigneeName || assigneeLabelById.get(task.assigneeUserId) || task.assigneeUserId}</span> : <span>Исполнитель: не назначен</span>}
                         {task.unreadComments > 0 && <span className="task-unread-pill">Новых сообщений: {task.unreadComments}</span>}
-                      </div>
-                      <div className="task-card-actions">
-                        <button type="button" className="ghost icon-btn" onClick={() => handleEditTask(task)} title="Изменить задачу" aria-label="Изменить">✎</button>
-                        <button type="button" className="ghost icon-btn danger" onClick={() => void handleDeleteTask(task.id)} title="Удалить задачу" aria-label="Удалить">✕</button>
                       </div>
                     </article>
                   ))}
@@ -1708,6 +2104,124 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         </div>
         </div>
 
+        {selectedMemberStats && (
+          <div className="task-modal-backdrop" onMouseDown={() => setSelectedMemberStatsUserId('')} role="presentation">
+            <div className="task-modal member-stats-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Статистика участника">
+              <div className="task-modal-header member-stats-header">
+                <div className="member-stats-header-main">
+                  <div className="member-stats-avatar" aria-hidden="true">
+                    {(selectedMemberStats.displayName || '?').slice(0, 1).toUpperCase()}
+                  </div>
+                  <div>
+                    <p className="section-label">СТАТИСТИКА УЧАСТНИКА</p>
+                    <h3>{selectedMemberStats.displayName}</h3>
+                    <p className="muted-caption">Текущий проект: {activeProject?.name || 'Не выбран'}</p>
+                  </div>
+                </div>
+                <div className="member-stats-header-side">
+                  <div className="member-stats-rate-card">
+                    <span className="mini-label">Процент выполнения</span>
+                    <strong>{selectedMemberCompletionRate}%</strong>
+                    <p>{selectedMemberStats.completedCount} из {selectedMemberStats.assignedCount} задач завершено</p>
+                  </div>
+                  <button type="button" className="ghost icon-btn" onClick={() => setSelectedMemberStatsUserId('')} aria-label="Закрыть">✕</button>
+                </div>
+              </div>
+
+              <div className="tasks-meta-grid member-stats-grid">
+                <article className="mini-panel member-stats-summary-card">
+                  <span className="mini-label">Назначено</span>
+                  <strong>{selectedMemberStats.assignedCount}</strong>
+                  <p>Всего задач у участника в текущем проекте.</p>
+                </article>
+                <article className="mini-panel member-stats-summary-card">
+                  <span className="mini-label">Выполнено</span>
+                  <strong>{selectedMemberStats.completedCount}</strong>
+                  <p>Задач с отдельной отметкой выполнения.</p>
+                </article>
+                <article className="mini-panel member-stats-summary-card">
+                  <span className="mini-label">Просрочено</span>
+                  <strong>{selectedMemberStats.overdueCount}</strong>
+                  <p>Есть дедлайн в прошлом и задача еще не завершена.</p>
+                </article>
+                <article className="mini-panel member-stats-summary-card">
+                  <span className="mini-label">В работе</span>
+                  <strong>{selectedMemberStats.activeCount}</strong>
+                  <p>Активные задачи без отметки выполнения.</p>
+                </article>
+              </div>
+
+              <div className="task-access-grid member-stats-sections">
+                <section className="task-access-panel member-stats-section">
+                  <div className="task-access-header member-stats-section-header">
+                    <div>
+                      <span>В работе</span>
+                      <strong>{selectedMemberStats.activeCount}</strong>
+                    </div>
+                    <p className="muted-caption">Текущая нагрузка по проекту.</p>
+                  </div>
+                  <div className="list-block member-stats-list">
+                    {selectedMemberStats.activeTasks.length === 0 ? (
+                      <p className="empty-state">Нет активных задач.</p>
+                    ) : selectedMemberStats.activeTasks.map((task) => (
+                      <article key={task.id} className="list-item compact-item member-stats-list-item">
+                        <div>
+                          <strong>{task.title}</strong>
+                          <p>{task.dueAt ? `Срок: ${new Date(task.dueAt).toLocaleString()}` : 'Без срока'}</p>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="task-access-panel member-stats-section">
+                  <div className="task-access-header member-stats-section-header">
+                    <div>
+                      <span>Выполнено</span>
+                      <strong>{selectedMemberStats.completedCount}</strong>
+                    </div>
+                    <p className="muted-caption">Уже закрытые задачи участника.</p>
+                  </div>
+                  <div className="list-block member-stats-list">
+                    {selectedMemberStats.completedTasks.length === 0 ? (
+                      <p className="empty-state">Пока нет выполненных задач.</p>
+                    ) : selectedMemberStats.completedTasks.map((task) => (
+                      <article key={task.id} className="list-item compact-item member-stats-list-item">
+                        <div>
+                          <strong>{task.title}</strong>
+                          <p>{task.description || 'Без описания'}</p>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="task-access-panel member-stats-section">
+                  <div className="task-access-header member-stats-section-header">
+                    <div>
+                      <span>Просрочено</span>
+                      <strong>{selectedMemberStats.overdueCount}</strong>
+                    </div>
+                    <p className="muted-caption">Задачи, требующие внимания.</p>
+                  </div>
+                  <div className="list-block member-stats-list">
+                    {selectedMemberStats.overdueTasks.length === 0 ? (
+                      <p className="empty-state">Нет просроченных задач.</p>
+                    ) : selectedMemberStats.overdueTasks.map((task) => (
+                      <article key={task.id} className="list-item compact-item member-stats-list-item">
+                        <div>
+                          <strong>{task.title}</strong>
+                          <p>{task.dueAt ? `Просрочена с ${new Date(task.dueAt).toLocaleString()}` : 'Без срока'}</p>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        )}
+
         {editorTask && (
           <div className="task-modal-backdrop" onMouseDown={closeTaskEditor} role="presentation">
             <div className="task-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Редактирование задачи">
@@ -1716,7 +2230,19 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                   <p className="section-label">РЕДАКТИРОВАНИЕ ЗАДАЧИ</p>
                   <h3>{editorTask.title}</h3>
                 </div>
-                <button type="button" className="ghost icon-btn" onClick={closeTaskEditor} aria-label="Закрыть">✕</button>
+                <div className="task-modal-header-actions">
+                  <button
+                    type="button"
+                    className={`ghost task-completion-chip ${isTaskDone(editorTask) ? 'done' : ''}`}
+                    onClick={() => void handleToggleTaskDone(editorTask)}
+                  >
+                    <span className="task-completion-box" aria-hidden="true">
+                      {isTaskDone(editorTask) && <span className="task-completion-mark" />}
+                    </span>
+                    {isTaskDone(editorTask) ? 'Выполнена' : 'Отметить выполненной'}
+                  </button>
+                  <button type="button" className="ghost icon-btn" onClick={closeTaskEditor} aria-label="Закрыть">✕</button>
+                </div>
               </div>
 
               <div className="task-modal-body">
