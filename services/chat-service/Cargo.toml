@@ -1,0 +1,30 @@
+[package]
+name = "chat-service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8.8"
+tokio = { version = "1.51.1", features = ["macros", "rt-multi-thread", "signal", "net"] }
+
+sqlx = { version = "0.8.6", default-features = false, features = [
+  "runtime-tokio-rustls",
+  "postgres",
+  "uuid",
+  "chrono",
+  "macros",
+  "migrate",
+] }
+
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+chrono = { version = "0.4.44", features = ["serde"] }
+uuid = { version = "1.23.0", features = ["v4", "serde"] }
+validator = { version = "0.20.0", features = ["derive"] }
+tower-http = { version = "0.6.8", features = ["cors", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
+dotenvy = "0.15.7"
+
+async-trait = "0.1.89"
