@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	observability "observability-go"
 
 	"UnifiedTaskManager/services/user-service/internal/model"
 	"UnifiedTaskManager/services/user-service/internal/repository"
@@ -33,6 +34,7 @@ type HTTPHandler struct {
 	allowOrigin   string
 	limitMu       sync.Mutex
 	limits        map[string][]time.Time
+	logger        *slog.Logger
 }
 
 type AdminOps struct {
@@ -45,7 +47,7 @@ func NewHTTPHandler(svc service.UserService, ping ...func(context.Context) error
 	if len(ping) > 0 {
 		readinessPing = ping[0]
 	}
-	return &HTTPHandler{svc: svc, ping: readinessPing, allowOrigin: "*", limits: make(map[string][]time.Time)}
+	return &HTTPHandler{svc: svc, ping: readinessPing, allowOrigin: "*", limits: make(map[string][]time.Time), logger: observability.NewLogger("user-service")}
 }
 
 func (h *HTTPHandler) SetCORSAllowOrigin(origin string) {
@@ -65,7 +67,7 @@ func (h *HTTPHandler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
 	mux.HandleFunc("/readyz", h.readyz)
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", observability.MetricsHandler())
 	mux.HandleFunc("/v1/auth/register", h.register)
 	mux.HandleFunc("/v1/auth/login", h.login)
 	mux.HandleFunc("/v1/auth/refresh", h.refresh)
@@ -81,11 +83,37 @@ func (h *HTTPHandler) Routes() http.Handler {
 	mux.HandleFunc("/v1/permissions/check", h.auth(h.permissionsCheck))
 	mux.HandleFunc("/internal/admin/outbox/flush", h.auth(h.requireAdmin(h.adminOutboxFlush)))
 	mux.HandleFunc("/internal/admin/outbox/clean", h.auth(h.requireAdmin(h.adminOutboxClean)))
-	return h.withCORS(mux)
+	return observability.NewHTTPMetrics("user-service").Middleware(h.logger, h.withCORS(mux))
 }
 
 func (h *HTTPHandler) Run(addr string) error {
 	return http.ListenAndServe(addr, h.Routes())
+}
+
+func (h *HTTPHandler) audit(r *http.Request, event string, attrs ...any) {
+	if h.logger == nil {
+		return
+	}
+	base := []any{
+		"event_type", event,
+		"actor_user_id", currentUserID(r.Context()),
+		"actor_role", currentRole(r.Context()),
+	}
+	base = append(base, attrs...)
+	h.logger.InfoContext(r.Context(), "audit_event", base...)
+}
+
+func (h *HTTPHandler) security(r *http.Request, event string, attrs ...any) {
+	if h.logger == nil {
+		return
+	}
+	base := []any{
+		"event_type", event,
+		"actor_user_id", currentUserID(r.Context()),
+		"remote_addr", clientKey(r),
+	}
+	base = append(base, attrs...)
+	h.logger.WarnContext(r.Context(), "security_event", base...)
 }
 
 func (h *HTTPHandler) withCORS(next http.Handler) http.Handler {
@@ -131,6 +159,7 @@ func (h *HTTPHandler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.allowRate(r, "register", 10, time.Minute) {
+		h.security(r, "rate_limited", "scope", "register")
 		writeJSON(w, http.StatusTooManyRequests, errorBody("RATE_LIMITED", "Too many requests"))
 		return
 	}
@@ -144,9 +173,11 @@ func (h *HTTPHandler) register(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.Register(req.Email, req.Password, req.Name)
 	if err != nil {
+		h.security(r, "auth_register_failed", "reason", err.Error())
 		h.writeServiceError(w, err)
 		return
 	}
+	h.audit(r, "auth_registered", "target_user_id", resp.User.ID, "role", resp.User.Role, "status", resp.User.Status)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -156,6 +187,7 @@ func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.allowRate(r, "login", 10, time.Minute) {
+		h.security(r, "rate_limited", "scope", "login")
 		writeJSON(w, http.StatusTooManyRequests, errorBody("RATE_LIMITED", "Too many requests"))
 		return
 	}
@@ -168,9 +200,11 @@ func (h *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.Login(req.Email, req.Password)
 	if err != nil {
+		h.security(r, "auth_login_failed", "reason", err.Error())
 		h.writeServiceError(w, err)
 		return
 	}
+	h.audit(r, "auth_login_succeeded", "target_user_id", resp.User.ID, "role", resp.User.Role, "status", resp.User.Status)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -180,6 +214,7 @@ func (h *HTTPHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.allowRate(r, "refresh", 20, time.Minute) {
+		h.security(r, "rate_limited", "scope", "refresh")
 		writeJSON(w, http.StatusTooManyRequests, errorBody("RATE_LIMITED", "Too many requests"))
 		return
 	}
@@ -191,6 +226,7 @@ func (h *HTTPHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.Refresh(req.RefreshToken)
 	if err != nil {
+		h.security(r, "auth_refresh_failed", "reason", err.Error())
 		h.writeServiceError(w, err)
 		return
 	}
@@ -242,6 +278,7 @@ func (h *HTTPHandler) usersMe(w http.ResponseWriter, r *http.Request) {
 			h.writeServiceError(w, err)
 			return
 		}
+		h.audit(r, "profile_updated", "target_user_id", userID, "password_changed", req.Password != nil)
 		writeJSON(w, http.StatusOK, user)
 	default:
 		writeMethodNotAllowed(w)
@@ -330,6 +367,7 @@ func (h *HTTPHandler) userByID(w http.ResponseWriter, r *http.Request) {
 			h.writeServiceError(w, err)
 			return
 		}
+		h.audit(r, "user_updated_by_admin", "target_user_id", userID, "role", user.Role, "status", user.Status)
 		writeJSON(w, http.StatusOK, user)
 	case http.MethodDelete:
 		err := h.svc.DeleteUserByID(role, userID)
@@ -337,6 +375,7 @@ func (h *HTTPHandler) userByID(w http.ResponseWriter, r *http.Request) {
 			h.writeServiceError(w, err)
 			return
 		}
+		h.audit(r, "user_deleted_by_admin", "target_user_id", userID)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		writeMethodNotAllowed(w)
@@ -365,6 +404,7 @@ func (h *HTTPHandler) teams(w http.ResponseWriter, r *http.Request) {
 			h.writeServiceError(w, err)
 			return
 		}
+		h.audit(r, "team_created", "team_id", team.ID)
 		writeJSON(w, http.StatusCreated, team)
 	default:
 		writeMethodNotAllowed(w)
@@ -387,6 +427,7 @@ func (h *HTTPHandler) acceptTeamInvite(w http.ResponseWriter, r *http.Request) {
 		h.writeServiceError(w, err)
 		return
 	}
+	h.audit(r, "team_invite_accepted", "team_id", member.TeamID, "target_user_id", member.UserID, "role_key", member.RoleKey)
 	writeJSON(w, http.StatusOK, member)
 }
 
@@ -424,6 +465,7 @@ func (h *HTTPHandler) teamInvites(w http.ResponseWriter, r *http.Request) {
 			h.writeServiceError(w, err)
 			return
 		}
+		h.audit(r, "team_invite_accepted", "invite_id", inviteID, "team_id", member.TeamID, "target_user_id", member.UserID, "role_key", member.RoleKey)
 		writeJSON(w, http.StatusOK, member)
 		return
 	}
@@ -487,6 +529,7 @@ func (h *HTTPHandler) teamByID(w http.ResponseWriter, r *http.Request) {
 				h.writeServiceError(w, err)
 				return
 			}
+			h.audit(r, "team_deleted", "team_id", teamID)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		default:
@@ -520,6 +563,7 @@ func (h *HTTPHandler) teamByID(w http.ResponseWriter, r *http.Request) {
 				h.writeServiceError(w, err)
 				return
 			}
+			h.audit(r, "team_role_created", "team_id", teamID, "role_key", req.Key, "permission_count", len(req.Permissions))
 			writeJSON(w, http.StatusCreated, role)
 		default:
 			writeMethodNotAllowed(w)
@@ -542,6 +586,7 @@ func (h *HTTPHandler) teamByID(w http.ResponseWriter, r *http.Request) {
 			h.writeServiceError(w, err)
 			return
 		}
+		h.audit(r, "team_invite_created", "team_id", teamID, "invite_id", invite.ID, "role_key", req.RoleKey, "ttl_hours", req.TTLHours)
 		writeJSON(w, http.StatusCreated, map[string]interface{}{"invite": invite, "token": token})
 	case "members":
 		if len(parts) == 2 {
@@ -570,6 +615,7 @@ func (h *HTTPHandler) teamByID(w http.ResponseWriter, r *http.Request) {
 				h.writeServiceError(w, err)
 				return
 			}
+			h.audit(r, "team_member_role_updated", "team_id", teamID, "target_user_id", memberUserID, "role_key", req.RoleKey)
 			writeJSON(w, http.StatusOK, member)
 			return
 		}
@@ -596,6 +642,7 @@ func (h *HTTPHandler) teamByID(w http.ResponseWriter, r *http.Request) {
 					h.writeServiceError(w, err)
 					return
 				}
+				h.audit(r, "project_created", "team_id", teamID, "project_id", project.ID)
 				writeJSON(w, http.StatusCreated, project)
 			default:
 				writeMethodNotAllowed(w)
@@ -628,6 +675,7 @@ func (h *HTTPHandler) teamByID(w http.ResponseWriter, r *http.Request) {
 					h.writeServiceError(w, err)
 					return
 				}
+				h.audit(r, "project_deleted", "team_id", teamID, "project_id", projectID)
 				w.WriteHeader(http.StatusNoContent)
 			default:
 				writeMethodNotAllowed(w)
@@ -662,6 +710,7 @@ func (h *HTTPHandler) teamByID(w http.ResponseWriter, r *http.Request) {
 						h.writeServiceError(w, err)
 						return
 					}
+					h.audit(r, "project_role_created", "team_id", teamID, "project_id", projectID, "role_key", req.Key, "permission_count", len(req.Permissions))
 					writeJSON(w, http.StatusCreated, item)
 				default:
 					writeMethodNotAllowed(w)
@@ -688,6 +737,7 @@ func (h *HTTPHandler) teamByID(w http.ResponseWriter, r *http.Request) {
 						h.writeServiceError(w, err)
 						return
 					}
+					h.audit(r, "project_member_assigned", "team_id", teamID, "project_id", projectID, "target_user_id", req.UserID, "role_key", req.RoleKey)
 					writeJSON(w, http.StatusCreated, item)
 				default:
 					writeMethodNotAllowed(w)
@@ -708,16 +758,19 @@ func (h *HTTPHandler) auth(next http.HandlerFunc) http.HandlerFunc {
 		header := strings.TrimSpace(r.Header.Get("Authorization"))
 		parts := strings.SplitN(header, " ", 2)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			h.security(r, "auth_missing_bearer")
 			writeJSON(w, http.StatusUnauthorized, errorBody("UNAUTHORIZED", "Authorization header is required"))
 			return
 		}
 		userID, _, err := h.svc.ParseAccessToken(parts[1])
 		if err != nil {
+			h.security(r, "auth_invalid_token", "reason", err.Error())
 			writeJSON(w, http.StatusUnauthorized, errorBody("UNAUTHORIZED", "Invalid token"))
 			return
 		}
 		user, err := h.svc.GetCurrentUser(userID)
 		if err != nil || user.Status != "active" {
+			h.security(r, "auth_inactive_or_missing_user", "target_user_id", userID)
 			writeJSON(w, http.StatusUnauthorized, errorBody("UNAUTHORIZED", "Invalid token"))
 			return
 		}
@@ -730,11 +783,13 @@ func (h *HTTPHandler) auth(next http.HandlerFunc) http.HandlerFunc {
 func (h *HTTPHandler) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if currentRole(r.Context()) != "admin" {
+			h.security(r, "admin_role_required")
 			writeJSON(w, http.StatusForbidden, errorBody("FORBIDDEN", "Admin role required"))
 			return
 		}
 		if h.adminOpsToken != "" {
 			if got := strings.TrimSpace(r.Header.Get("X-Admin-Ops-Token")); got != h.adminOpsToken {
+				h.security(r, "admin_ops_token_invalid")
 				writeJSON(w, http.StatusForbidden, errorBody("FORBIDDEN", "Invalid admin ops token"))
 				return
 			}
@@ -757,6 +812,7 @@ func (h *HTTPHandler) adminOutboxFlush(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody("INTERNAL_ERROR", "Failed to flush outbox"))
 		return
 	}
+	h.audit(r, "admin_outbox_flush", "published", published)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"published": published})
 }
 
@@ -774,6 +830,7 @@ func (h *HTTPHandler) adminOutboxClean(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody("INTERNAL_ERROR", "Failed to run outbox cleaner"))
 		return
 	}
+	h.audit(r, "admin_outbox_clean", "deleted", deleted, "archived", archived)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": deleted, "archived": archived})
 }
 

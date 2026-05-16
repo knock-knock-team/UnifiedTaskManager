@@ -7,6 +7,7 @@ require (
 	github.com/prometheus/client_golang v1.20.5
 	github.com/rabbitmq/amqp091-go v1.10.0
 	golang.org/x/crypto v0.24.0
+	observability-go v0.0.0
 )
 
 require (
@@ -25,3 +26,5 @@ require (
 	golang.org/x/text v0.16.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 )
+
+replace observability-go => ../../libs/observability-go

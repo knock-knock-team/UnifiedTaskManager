@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
 	"time"
+
+	observability "observability-go"
 
 	"UnifiedTaskManager/services/api-gateway/internal/service"
 )
@@ -32,6 +35,7 @@ type HTTPHandler struct {
 	mlURL             *url.URL
 	notificationURL   *url.URL
 	allowOrigin       string
+	logger            *slog.Logger
 }
 
 func NewHTTPHandler(userServiceURL, taskServiceURL, chatServiceURL, callServiceURL, fileServiceURL, mlServiceURL, notificationServiceURL string, tokens *service.TokenManager) (*HTTPHandler, error) {
@@ -81,6 +85,7 @@ func NewHTTPHandler(userServiceURL, taskServiceURL, chatServiceURL, callServiceU
 		mlURL:             mlURL,
 		notificationURL:   notificationURL,
 		allowOrigin:       "*",
+		logger:            observability.NewLogger("api-gateway"),
 	}, nil
 }
 
@@ -96,8 +101,10 @@ func (h *HTTPHandler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
 	mux.HandleFunc("/readyz", h.readyz)
+	mux.Handle("/metrics", observability.MetricsHandler())
+	mux.HandleFunc("/v1/client-events", h.withCORS(h.clientEvents))
 	mux.HandleFunc("/", h.withCORS(h.route))
-	return mux
+	return observability.NewHTTPMetrics("api-gateway").Middleware(h.logger, mux)
 }
 
 func (h *HTTPHandler) Run(addr string) error {
@@ -214,6 +221,78 @@ func (h *HTTPHandler) route(w http.ResponseWriter, r *http.Request) {
 		log.Printf("No route found for: %s", path)
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not found"})
 	}
+}
+
+func (h *HTTPHandler) clientEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"message": "method not allowed"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
+	defer r.Body.Close()
+
+	var req struct {
+		Type      string            `json:"type"`
+		Route     string            `json:"route"`
+		Status    int               `json:"status"`
+		Duration  float64           `json:"durationMs"`
+		Message   string            `json:"message"`
+		Browser   string            `json:"browser"`
+		Timestamp string            `json:"timestamp"`
+		Meta      map[string]string `json:"meta"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid event"})
+		return
+	}
+
+	eventType := sanitizeLogValue(req.Type, 48)
+	if eventType == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "event type is required"})
+		return
+	}
+
+	h.logger.WarnContext(r.Context(), "client_event",
+		"event_type", eventType,
+		"route", sanitizeLogValue(req.Route, 180),
+		"status", req.Status,
+		"duration_ms", req.Duration,
+		"message", sanitizeLogValue(req.Message, 300),
+		"browser", sanitizeLogValue(req.Browser, 160),
+		"timestamp", sanitizeLogValue(req.Timestamp, 80),
+		"meta", sanitizeMeta(req.Meta),
+	)
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+func sanitizeLogValue(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit]
+}
+
+func sanitizeMeta(meta map[string]string) map[string]string {
+	if len(meta) == 0 {
+		return nil
+	}
+	out := make(map[string]string, min(len(meta), 12))
+	count := 0
+	for key, value := range meta {
+		if count >= 12 {
+			break
+		}
+		key = sanitizeLogValue(key, 48)
+		if key == "" {
+			continue
+		}
+		out[key] = sanitizeLogValue(value, 120)
+		count++
+	}
+	return out
 }
 
 func (h *HTTPHandler) requireAccessToken(r *http.Request) (*service.Claims, error) {

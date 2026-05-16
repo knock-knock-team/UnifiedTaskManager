@@ -250,6 +250,7 @@ class StorageService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
         has_access = await self.repo.has_access(environment_id, actor_user_id)
         if not has_access:
+            logger.warning("file_access_denied", extra={"event_type": "file_access_denied", "environment_id": environment_id, "actor_user_id": actor_user_id})
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
         return env
 
@@ -262,6 +263,10 @@ class StorageService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Environment not found")
         has_access = await self.repo.has_access(env.id, actor_user_id)
         if not has_access:
+            logger.warning(
+                "file_access_denied",
+                extra={"event_type": "file_access_denied", "team_id": team_id, "project_id": project_id, "actor_user_id": actor_user_id},
+            )
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
         return env
 
@@ -284,6 +289,10 @@ class StorageService:
         for env in await self.repo.list_team_environments(team_id):
             total += self._directory_size(Path(env.root_path))
         if total + max(incoming_bytes, 0) > TEAM_QUOTA_BYTES:
+            logger.warning(
+                "file_quota_exceeded",
+                extra={"event_type": "file_quota_exceeded", "team_id": team_id, "current_bytes": total, "incoming_bytes": incoming_bytes, "quota_bytes": TEAM_QUOTA_BYTES},
+            )
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail="Team storage quota exceeded (100MB)",
@@ -307,6 +316,7 @@ class StorageService:
         normalized = (relative_path or "").strip().lstrip("/")
         target = (root_path / normalized).resolve()
         if target != root_path and root_path not in target.parents:
+            logger.warning("file_invalid_path_rejected", extra={"event_type": "file_invalid_path_rejected", "path_depth": len(Path(relative_path or "").parts)})
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path")
         return target
 

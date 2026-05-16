@@ -7,3 +7,4 @@ httpx
 pydantic-settings
 python-json-logger==4.1.0
 uvicorn
+prometheus-client==0.21.1

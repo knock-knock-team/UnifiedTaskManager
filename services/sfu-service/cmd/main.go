@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"math/rand"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
+	observability "observability-go"
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -736,25 +736,29 @@ done:
 }
 
 func main() {
+	mux := http.NewServeMux()
 	// Handle WebSocket paths under /ws/ to be compatible with previous call-service
-	http.HandleFunc("/ws/", wsSFUHandler)
-	http.HandleFunc("/ws", wsSFUHandler)
-	http.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/ws/", wsSFUHandler)
+	mux.HandleFunc("/ws", wsSFUHandler)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	http.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
-	http.HandleFunc("/calls", handleCreateCall)
-	http.HandleFunc("/calls/", handleCallAction)
+	mux.Handle("/metrics", observability.MetricsHandler())
+	mux.HandleFunc("/calls", handleCreateCall)
+	mux.HandleFunc("/calls/", handleCallAction)
 
 	addr := ":8086"
 	if a := os.Getenv("SFU_ADDR"); a != "" {
 		addr = a
 	}
 
-	fmt.Printf("SFU signaling listening on %s\n", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
+	logger := observability.NewLogger("sfu-service")
+	logger.Info("sfu-service starting", "addr", addr)
+	handler := observability.NewHTTPMetrics("sfu-service").Middleware(logger, mux)
+	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("listen error: %v", err)
 	}
 }

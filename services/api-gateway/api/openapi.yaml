@@ -3,20 +3,54 @@ info:
   title: Unified Task Manager API
   version: 0.1.0
   description: |
-    Public API contract exposed through the API Gateway.
-    The gateway routes requests to user-service and task-service.
+    Public HTTP API exposed through the API Gateway (`/api` prefix on the edge).
+    Nginx strips `/api` before proxying; paths below are relative to that prefix.
+
+    | Prefix | Service |
+    |--------|---------|
+    | `/v1/auth`, `/v1/users`, `/v1/teams`, `/v1/permissions` | user-service |
+    | `/v1/tasks`, `/v1/task-columns`, `/v1/boards` | task-service |
+    | `/v1/chats` | chat-service |
+    | `/v1/projects`, `/v1/tasks/.../deadline-notification` | notification-service |
+    | `/v1/file-environments` | file-service |
+    | `/api/tasks/assistant`, `/task_name_description` | ml-service |
+    | `/calls` | sfu-service (WebRTC signaling at `/ws/calls` on the edge) |
+
+    **Auth:** `Authorization: Bearer <accessToken>` except public auth routes.
+    **Team scope:** send `X-Team-Id` for task/column APIs (gateway also accepts `teamId` query on board WebSocket).
+    **Optimistic concurrency:** task/column PATCH accepts `If-Match` (ETag from GET/PATCH); `412` returns `VERSION_CONFLICT` and `current` entity.
 
 servers:
   - url: /api
-    description: API Gateway base path
+    description: API Gateway (browser clients use this base URL)
 
 tags:
-  - name: User Service
-    description: User profile and account management
+  - name: Gateway
+    description: Gateway health
   - name: Auth
     description: Registration and authentication
-  - name: Chat Service
+  - name: Users
+    description: User profiles and admin user management
+  - name: Teams
+    description: Teams, invites, roles, members
+  - name: Projects
+    description: Projects within teams
+  - name: Permissions
+    description: Permission checks for RBAC
+  - name: Tasks
+    description: Tasks, columns, comments
+  - name: Board
+    description: Real-time collaborative board (WebSocket)
+  - name: Chat
     description: Chat rooms and messages
+  - name: Notifications
+    description: Deadline notification settings and triggers
+  - name: Files
+    description: Per-project file environments
+  - name: ML
+    description: Task assistant and name/description generation
+  - name: Calls
+    description: WebRTC call session management (signaling via WebSocket)
 
 security:
   - bearerAuth: []
@@ -94,7 +128,7 @@ paths:
 
   /v1/users/me:
     get:
-      tags: [User Service]
+      tags: [Users]
       summary: Get current user profile
       operationId: getCurrentUser
       responses:
@@ -108,7 +142,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
     patch:
-      tags: [User Service]
+      tags: [Users]
       summary: Update current user profile
       operationId: updateCurrentUser
       requestBody:
@@ -131,7 +165,7 @@ paths:
 
   /v1/users:
     get:
-      tags: [User Service]
+      tags: [Users]
       summary: List users
       description: Intended for admin or internal use via gateway policy.
       operationId: listUsers
@@ -157,7 +191,7 @@ paths:
 
   /v1/users/{userId}:
     get:
-      tags: [User Service]
+      tags: [Users]
       summary: Get user by id
       operationId: getUserById
       parameters:
@@ -177,7 +211,7 @@ paths:
           $ref: '#/components/responses/NotFound'
 
     patch:
-      tags: [User Service]
+      tags: [Users]
       summary: Update user by id
       description: Intended for admin or internal use via gateway policy.
       operationId: updateUserById
@@ -206,7 +240,7 @@ paths:
           $ref: '#/components/responses/NotFound'
 
     delete:
-      tags: [User Service]
+      tags: [Users]
       summary: Delete user by id
       description: Soft-delete is recommended in user-service implementation.
       operationId: deleteUserById
@@ -224,7 +258,7 @@ paths:
 
   /v1/chats/rooms:
     post:
-      tags: [Chat Service]
+      tags: [Chat]
       summary: Create a chat room
       operationId: createChatRoom
       requestBody:
@@ -246,7 +280,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
     get:
-      tags: [Chat Service]
+      tags: [Chat]
       summary: List chat rooms for current user
       operationId: listChatRooms
       parameters:
@@ -264,7 +298,7 @@ paths:
 
   /v1/chats/rooms/{roomId}:
     get:
-      tags: [Chat Service]
+      tags: [Chat]
       summary: Get room by id
       operationId: getChatRoom
       parameters:
@@ -288,7 +322,7 @@ paths:
 
   /v1/chats/rooms/{roomId}/messages:
     post:
-      tags: [Chat Service]
+      tags: [Chat]
       summary: Send a message to room
       operationId: sendChatMessage
       parameters:
@@ -317,7 +351,7 @@ paths:
           $ref: '#/components/responses/NotFound'
 
     get:
-      tags: [Chat Service]
+      tags: [Chat]
       summary: List messages in room
       operationId: listChatMessages
       parameters:
@@ -341,12 +375,1331 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /healthz:
+    get:
+      tags: [Gateway]
+      summary: Gateway liveness
+      operationId: gatewayHealthz
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /readyz:
+    get:
+      tags: [Gateway]
+      summary: Gateway readiness (upstream services)
+      operationId: gatewayReadyz
+      security: []
+      responses:
+        '200':
+          description: All upstreams ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+        '503':
+          description: At least one upstream not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleMessage'
+
+  /v1/users/lookup:
+    get:
+      tags: [Users]
+      summary: Lookup user by id, email, or tag
+      operationId: lookupUser
+      parameters:
+        - name: id
+          in: query
+          schema:
+            type: string
+        - name: email
+          in: query
+          schema:
+            type: string
+            format: email
+        - name: tag
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: User found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/teams:
+    get:
+      tags: [Teams]
+      summary: List teams for current user
+      operationId: listTeams
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Teams]
+      summary: Create team
+      operationId: createTeam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTeamRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/teams/invites:
+    get:
+      tags: [Teams]
+      summary: List pending invites for current user email
+      operationId: listTeamInvites
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamInviteListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/teams/invites/accept:
+    post:
+      tags: [Teams]
+      summary: Accept invite by token
+      operationId: acceptTeamInviteByToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamMember'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/teams/invites/{inviteId}/accept:
+    post:
+      tags: [Teams]
+      summary: Accept invite by id
+      operationId: acceptTeamInviteById
+      parameters:
+        - $ref: '#/components/parameters/InviteIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamMember'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/teams/{teamId}:
+    get:
+      tags: [Teams]
+      summary: Get team with roles and members
+      operationId: getTeam
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamDetailsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Teams]
+      summary: Delete team (team admin)
+      operationId: deleteTeam
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/teams/{teamId}/roles:
+    get:
+      tags: [Teams]
+      summary: List team roles
+      operationId: listTeamRoles
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamRoleListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Teams]
+      summary: Create custom team role
+      operationId: createTeamRole
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTeamRoleRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamRole'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/teams/{teamId}/members:
+    get:
+      tags: [Teams]
+      summary: List team members
+      operationId: listTeamMembers
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamMemberListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/teams/{teamId}/members/{userId}:
+    patch:
+      tags: [Teams]
+      summary: Change member role
+      operationId: updateTeamMember
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+        - $ref: '#/components/parameters/UserIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [roleKey]
+              properties:
+                roleKey:
+                  type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeamMember'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/teams/{teamId}/invite:
+    post:
+      tags: [Teams]
+      summary: Invite user to team by email
+      operationId: inviteToTeam
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTeamInviteRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invite:
+                    $ref: '#/components/schemas/TeamInvite'
+                  token:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/teams/{teamId}/projects:
+    get:
+      tags: [Projects]
+      summary: List projects in team
+      operationId: listProjects
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Projects]
+      summary: Create project
+      operationId: createProject
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/teams/{teamId}/projects/{projectId}:
+    get:
+      tags: [Projects]
+      summary: Get project with roles and members
+      operationId: getProject
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+        - $ref: '#/components/parameters/ProjectIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDetailsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Projects]
+      summary: Delete project
+      operationId: deleteProject
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+        - $ref: '#/components/parameters/ProjectIdPath'
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/teams/{teamId}/projects/{projectId}/roles:
+    get:
+      tags: [Projects]
+      summary: List project roles
+      operationId: listProjectRoles
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+        - $ref: '#/components/parameters/ProjectIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRoleListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Projects]
+      summary: Create project role
+      operationId: createProjectRole
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+        - $ref: '#/components/parameters/ProjectIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRoleRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRole'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/teams/{teamId}/projects/{projectId}/members:
+    get:
+      tags: [Projects]
+      summary: List project members
+      operationId: listProjectMembers
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+        - $ref: '#/components/parameters/ProjectIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectMemberListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Projects]
+      summary: Add project member
+      operationId: addProjectMember
+      parameters:
+        - $ref: '#/components/parameters/TeamIdPath'
+        - $ref: '#/components/parameters/ProjectIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddProjectMemberRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectMember'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/permissions/check:
+    post:
+      tags: [Permissions]
+      summary: Check project permission for current user
+      operationId: checkPermission
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PermissionCheckRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionCheckResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks in project
+      operationId: listTasks
+      parameters:
+        - $ref: '#/components/parameters/TeamIdHeader'
+        - $ref: '#/components/parameters/ProjectIdQuery'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          headers:
+            ETag:
+              description: Not set on list responses
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Tasks]
+      summary: Create task
+      operationId: createTask
+      parameters:
+        - $ref: '#/components/parameters/TeamIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+      responses:
+        '201':
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/tasks/{taskId}:
+    get:
+      tags: [Tasks]
+      summary: Get task by id
+      operationId: getTask
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+      responses:
+        '200':
+          headers:
+            ETag:
+              schema:
+                type: string
+                example: '"42"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Tasks]
+      summary: Update task (optimistic)
+      operationId: updateTask
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+        - $ref: '#/components/parameters/IfMatchHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTaskRequest'
+      responses:
+        '200':
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '412':
+          $ref: '#/components/responses/VersionConflict'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Tasks]
+      summary: Delete task
+      operationId: deleteTask
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/tasks/{taskId}/comments:
+    get:
+      tags: [Tasks]
+      summary: List task comments
+      operationId: listTaskComments
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskCommentListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Tasks]
+      summary: Add comment
+      operationId: createTaskComment
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskCommentRequest'
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskComment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/tasks/{taskId}/comments/read:
+    post:
+      tags: [Tasks]
+      summary: Mark comments as read
+      operationId: markTaskCommentsRead
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+      responses:
+        '204':
+          description: Marked read
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/tasks/{taskId}/comments/{commentId}:
+    delete:
+      tags: [Tasks]
+      summary: Delete comment
+      operationId: deleteTaskComment
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+        - $ref: '#/components/parameters/CommentIdPath'
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/tasks/{taskId}/deadline-notification:
+    post:
+      tags: [Notifications]
+      summary: Send manual deadline notification for task
+      operationId: sendDeadlineNotification
+      parameters:
+        - $ref: '#/components/parameters/TaskIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: sent
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/task-columns:
+    get:
+      tags: [Tasks]
+      summary: List columns for project
+      operationId: listTaskColumns
+      parameters:
+        - $ref: '#/components/parameters/TeamIdHeader'
+        - $ref: '#/components/parameters/ProjectIdQuery'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskColumnListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Tasks]
+      summary: Create column
+      operationId: createTaskColumn
+      parameters:
+        - $ref: '#/components/parameters/TeamIdHeader'
+        - $ref: '#/components/parameters/ProjectIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+      responses:
+        '201':
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskColumn'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/task-columns/reorder:
+    post:
+      tags: [Tasks]
+      summary: Reorder columns
+      description: Implemented as `POST /v1/task-columns?action=reorder` on the server.
+      operationId: reorderTaskColumns
+      parameters:
+        - $ref: '#/components/parameters/TeamIdHeader'
+        - $ref: '#/components/parameters/ProjectIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderColumnsRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskColumnListResponse'
+        '412':
+          $ref: '#/components/responses/VersionConflict'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/task-columns/{columnId}:
+    patch:
+      tags: [Tasks]
+      summary: Update column (optimistic)
+      operationId: updateTaskColumn
+      parameters:
+        - $ref: '#/components/parameters/ColumnIdPath'
+        - $ref: '#/components/parameters/IfMatchHeader'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+      responses:
+        '200':
+          headers:
+            ETag:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskColumn'
+        '412':
+          $ref: '#/components/responses/VersionConflict'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Tasks]
+      summary: Delete column
+      operationId: deleteTaskColumn
+      parameters:
+        - $ref: '#/components/parameters/ColumnIdPath'
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/boards/stream:
+    get:
+      tags: [Board]
+      summary: Board WebSocket (real-time sync + presence)
+      description: |
+        Upgrades to WebSocket. Auth via `Authorization` header or `token` query (for browsers).
+        Server sends JSON text frames (`BoardEvent`). Client may send `{"type":"ping"}`, `presence.ping`, or `resync`.
+      operationId: boardStream
+      security:
+        - bearerAuth: []
+        - bearerQuery: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdQuery'
+        - $ref: '#/components/parameters/TeamIdQuery'
+        - name: token
+          in: query
+          description: Bearer token when header cannot be set (WebSocket)
+          schema:
+            type: string
+        - name: displayName
+          in: query
+          schema:
+            type: string
+      responses:
+        '101':
+          description: Switching Protocols (WebSocket)
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Board hub unavailable
+
+  /v1/chats/rooms/{roomId}/participants:
+    post:
+      tags: [Chat]
+      summary: Add participants to room
+      operationId: addChatParticipants
+      parameters:
+        - $ref: '#/components/parameters/RoomIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddParticipantsRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/chats/rooms/{roomId}/participants/{userId}:
+    delete:
+      tags: [Chat]
+      summary: Remove participant from room
+      operationId: removeChatParticipant
+      parameters:
+        - $ref: '#/components/parameters/RoomIdPath'
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/projects/{projectId}/notification-settings:
+    get:
+      tags: [Notifications]
+      summary: Get deadline notification settings for project
+      operationId: getNotificationSettings
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Notifications]
+      summary: Update notification settings (project admin)
+      operationId: updateNotificationSettings
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNotificationSettingsRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/file-environments/ensure:
+    post:
+      tags: [Files]
+      summary: Ensure file environment exists for project
+      operationId: ensureFileEnvironment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileEnvironmentEnsureRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileEnvironment'
+
+  /v1/file-environments/members:
+    post:
+      tags: [Files]
+      summary: Add members to file environment
+      operationId: addFileEnvironmentMembers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileMembersRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items:
+                      type: string
+    delete:
+      tags: [Files]
+      summary: Remove members from file environment
+      operationId: removeFileEnvironmentMembers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileMembersRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items:
+                      type: string
+
+  /v1/file-environments/folders:
+    post:
+      tags: [Files]
+      summary: Create folder
+      operationId: createFileFolder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FilePathRequest'
+
+  /v1/file-environments/files:
+    post:
+      tags: [Files]
+      summary: Upload file
+      operationId: uploadFile
+      parameters:
+        - name: team_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: project_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: directory
+          in: query
+          schema:
+            type: string
+            default: .
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path:
+                    type: string
+
+  /v1/file-environments/entries:
+    get:
+      tags: [Files]
+      summary: List directory entries
+      operationId: listFileEntries
+      parameters:
+        - name: team_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: project_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: directory
+          in: query
+          schema:
+            type: string
+            default: .
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileEntryListResponse'
+    delete:
+      tags: [Files]
+      summary: Delete file or folder
+      operationId: deleteFileEntry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FilePathRequest'
+
+  /v1/file-environments/entries/rename:
+    patch:
+      tags: [Files]
+      summary: Rename file or folder
+      operationId: renameFileEntry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileRenameRequest'
+
+  /v1/file-environments/files/download:
+    get:
+      tags: [Files]
+      summary: Download file
+      operationId: downloadFile
+      parameters:
+        - name: team_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: project_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  /v1/file-environments/files/view:
+    get:
+      tags: [Files]
+      summary: View file inline
+      operationId: viewFile
+      parameters:
+        - name: team_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: project_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  /api/tasks/assistant/health:
+    get:
+      tags: [ML]
+      summary: Task/file assistant health
+      operationId: assistantHealth
+      security: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  service:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /api/tasks/assistant:
+    post:
+      tags: [ML]
+      summary: Run task/file assistant (single response)
+      operationId: runTaskAssistant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskFileAgentRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskFileAgentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/tasks/assistant/stream:
+    post:
+      tags: [ML]
+      summary: Stream task/file assistant (SSE)
+      operationId: streamTaskAssistant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskFileAgentRequest'
+      responses:
+        '200':
+          description: "Server-Sent Events (data lines as JSON objects)"
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /task_name_description:
+    post:
+      tags: [ML]
+      summary: Generate task title and description from raw text
+      operationId: generateTaskNameDescription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskNameDescriptionRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskNameDescriptionResponse'
+
+  /calls:
+    post:
+      tags: [Calls]
+      summary: Create call session
+      operationId: createCall
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /calls/{callId}/join:
+    post:
+      tags: [Calls]
+      summary: Join call (returns ICE servers)
+      operationId: joinCall
+      parameters:
+        - $ref: '#/components/parameters/CallIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: Call ended
+
+  /calls/{callId}/end:
+    post:
+      tags: [Calls]
+      summary: End call
+      operationId: endCall
+      parameters:
+        - $ref: '#/components/parameters/CallIdPath'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  id:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    bearerQuery:
+      type: apiKey
+      in: query
+      name: token
+      description: Bearer access token in query (WebSocket clients)
 
   parameters:
     UserIdPath:
@@ -374,6 +1727,81 @@ components:
         type: integer
         minimum: 0
         default: 0
+    TeamIdHeader:
+      name: X-Team-Id
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Active team for task/column APIs
+    TeamIdQuery:
+      name: teamId
+      in: query
+      required: true
+      schema:
+        type: string
+    ProjectIdQuery:
+      name: projectId
+      in: query
+      required: true
+      schema:
+        type: string
+    ProjectIdPath:
+      name: projectId
+      in: path
+      required: true
+      schema:
+        type: string
+    TeamIdPath:
+      name: teamId
+      in: path
+      required: true
+      schema:
+        type: string
+    TaskIdPath:
+      name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+    ColumnIdPath:
+      name: columnId
+      in: path
+      required: true
+      schema:
+        type: string
+    CommentIdPath:
+      name: commentId
+      in: path
+      required: true
+      schema:
+        type: string
+    InviteIdPath:
+      name: inviteId
+      in: path
+      required: true
+      schema:
+        type: string
+    RoomIdPath:
+      name: roomId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CallIdPath:
+      name: callId
+      in: path
+      required: true
+      schema:
+        type: string
+    IfMatchHeader:
+      name: If-Match
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Expected entity version (ETag from prior response)
 
   responses:
     BadRequest:
@@ -406,8 +1834,19 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    VersionConflict:
+      description: Optimistic concurrency conflict (412)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VersionConflictResponse'
 
   schemas:
+    SimpleMessage:
+      type: object
+      properties:
+        message:
+          type: string
     User:
       type: object
       required:
@@ -435,6 +1874,21 @@ components:
         status:
           type: string
           enum: [active, inactive, suspended]
+        tag:
+          type: string
+        bio:
+          type: string
+        githubUrl:
+          type: string
+        linkedInUrl:
+          type: string
+        telegram:
+          type: string
+        websiteUrl:
+          type: string
+        secondaryEmail:
+          type: string
+          format: email
         createdAt:
           type: string
           format: date-time
@@ -505,6 +1959,21 @@ components:
           type: string
           minLength: 1
           maxLength: 120
+        tag:
+          type: string
+        bio:
+          type: string
+        githubUrl:
+          type: string
+        linkedInUrl:
+          type: string
+        telegram:
+          type: string
+        websiteUrl:
+          type: string
+        secondaryEmail:
+          type: string
+          format: email
         password:
           type: string
           format: password
@@ -547,17 +2016,35 @@ components:
 
     ErrorResponse:
       type: object
+      required: [message]
+      properties:
+        code:
+          type: string
+          description: Present on user-service errors (e.g. UNAUTHORIZED)
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+    VersionConflictResponse:
+      type: object
       required: [code, message]
       properties:
         code:
           type: string
-          example: USER_NOT_FOUND
+          enum: [VERSION_CONFLICT]
         message:
           type: string
-          example: User not found
-        details:
-          type: object
-          additionalProperties: true
+          example: version conflict
+        current:
+          description: Latest task, column, or columns list
+          oneOf:
+            - $ref: '#/components/schemas/Task'
+            - $ref: '#/components/schemas/TaskColumn'
+            - type: array
+              items:
+                $ref: '#/components/schemas/TaskColumn'
 
     CreateRoomRequest:
       type: object
@@ -650,3 +2137,536 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Message'
+    AddParticipantsRequest:
+      type: object
+      required: [participantIds]
+      properties:
+        participantIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          minItems: 1
+
+    Team:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    TeamListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Team'
+
+    CreateTeamRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+
+    TeamDetailsResponse:
+      type: object
+      properties:
+        teamId: { type: string }
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamRole'
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMember'
+
+    TeamRole:
+      type: object
+      properties:
+        teamId: { type: string }
+        key: { type: string }
+        name: { type: string }
+        permissions:
+          type: array
+          items: { type: string }
+        system: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    TeamRoleListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamRole'
+
+    CreateTeamRoleRequest:
+      type: object
+      required: [key, name, permissions]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        permissions:
+          type: array
+          items: { type: string }
+
+    TeamMember:
+      type: object
+      properties:
+        teamId: { type: string }
+        userId: { type: string }
+        roleKey: { type: string }
+        invitedBy: { type: string }
+        joinedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    TeamMemberListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMember'
+
+    TeamInvite:
+      type: object
+      properties:
+        id: { type: string }
+        teamId: { type: string }
+        teamName: { type: string }
+        email: { type: string, format: email }
+        roleKey: { type: string }
+        status: { type: string }
+        invitedBy: { type: string }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    TeamInviteListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamInvite'
+
+    CreateTeamInviteRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+        roleKey: { type: string, default: member }
+        ttlHours: { type: integer, minimum: 1, maximum: 720 }
+
+    Project:
+      type: object
+      properties:
+        id: { type: string }
+        teamId: { type: string }
+        name: { type: string }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ProjectListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+
+    CreateProjectRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+
+    ProjectDetailsResponse:
+      type: object
+      properties:
+        projectId: { type: string }
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectRole'
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectMember'
+
+    ProjectRole:
+      type: object
+      properties:
+        projectId: { type: string }
+        key: { type: string }
+        name: { type: string }
+        permissions:
+          type: array
+          items: { type: string }
+        inheritTeamRoleKey: { type: string }
+        system: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ProjectRoleListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectRole'
+
+    CreateProjectRoleRequest:
+      type: object
+      required: [key, name, permissions]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        permissions:
+          type: array
+          items: { type: string }
+        inheritTeamRoleKey: { type: string }
+
+    ProjectMember:
+      type: object
+      properties:
+        projectId: { type: string }
+        userId: { type: string }
+        roleKey: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ProjectMemberListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectMember'
+
+    AddProjectMemberRequest:
+      type: object
+      required: [userId, roleKey]
+      properties:
+        userId: { type: string }
+        roleKey: { type: string }
+
+    PermissionCheckRequest:
+      type: object
+      required: [projectId, permission]
+      properties:
+        teamId: { type: string }
+        projectId: { type: string }
+        permission: { type: string }
+
+    PermissionCheckResult:
+      type: object
+      required: [allowed]
+      properties:
+        allowed: { type: boolean }
+        source: { type: string, enum: [team, project] }
+        teamRoleKey: { type: string }
+        projectRoleKey: { type: string }
+        matched:
+          type: array
+          items: { type: string }
+
+    Task:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [todo, in_progress, done] }
+        priority: { type: string, enum: [low, medium, high] }
+        dueAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        completedBy: { type: string }
+        createdBy: { type: string }
+        assigneeUserId: { type: string }
+        assigneeName: { type: string }
+        teamId: { type: string }
+        projectId: { type: string }
+        unreadComments: { type: integer }
+        version: { type: integer, format: int64 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    TaskListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    CreateTaskRequest:
+      type: object
+      required: [title, projectId]
+      properties:
+        title: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [todo, in_progress, done] }
+        priority: { type: string, enum: [low, medium, high] }
+        dueAt: { type: string, format: date-time }
+        assigneeUserId: { type: string }
+        assigneeName: { type: string }
+        projectId: { type: string }
+
+    UpdateTaskRequest:
+      type: object
+      properties:
+        title: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [todo, in_progress, done] }
+        priority: { type: string, enum: [low, medium, high] }
+        dueAt: { type: string, format: date-time, nullable: true }
+        assigneeUserId: { type: string, nullable: true }
+        assigneeName: { type: string }
+        completed: { type: boolean }
+
+    TaskColumn:
+      type: object
+      properties:
+        id: { type: string }
+        teamId: { type: string }
+        projectId: { type: string }
+        title: { type: string }
+        position: { type: integer }
+        version: { type: integer, format: int64 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    TaskColumnListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskColumn'
+
+    ReorderColumnsRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          items: { type: string }
+        versions:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+
+    TaskComment:
+      type: object
+      properties:
+        id: { type: string }
+        taskId: { type: string }
+        userId: { type: string }
+        authorName: { type: string }
+        body: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    TaskCommentListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskComment'
+
+    CreateTaskCommentRequest:
+      type: object
+      required: [body]
+      properties:
+        body: { type: string }
+        authorName: { type: string }
+
+    BoardEvent:
+      type: object
+      description: WebSocket JSON message from server
+      properties:
+        type:
+          type: string
+          enum:
+            - board.snapshot
+            - task.created
+            - task.updated
+            - task.deleted
+            - column.created
+            - column.updated
+            - column.deleted
+            - columns.reordered
+            - task.comment.added
+            - presence
+        teamId: { type: string }
+        projectId: { type: string }
+        task:
+          $ref: '#/components/schemas/Task'
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        column:
+          $ref: '#/components/schemas/TaskColumn'
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskColumn'
+        taskId: { type: string }
+        columnId: { type: string }
+        comment:
+          $ref: '#/components/schemas/TaskComment'
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/PresenceUser'
+        actorId: { type: string }
+
+    PresenceUser:
+      type: object
+      properties:
+        userId: { type: string }
+        name: { type: string }
+        lastSeen: { type: integer, format: int64 }
+
+    NotificationSettings:
+      type: object
+      properties:
+        projectId: { type: string }
+        teamId: { type: string }
+        notifyBeforeMinutes: { type: integer }
+        urgentBeforeMinutes: { type: integer }
+        updatedBy: { type: string }
+        updatedAt: { type: string, format: date-time }
+
+    UpdateNotificationSettingsRequest:
+      type: object
+      properties:
+        notifyBeforeMinutes: { type: integer, minimum: 1, maximum: 43200 }
+        urgentBeforeMinutes: { type: integer, minimum: 0 }
+
+    FileEnvironmentEnsureRequest:
+      type: object
+      required: [team_id, project_id]
+      properties:
+        team_id: { type: string }
+        project_id: { type: string }
+
+    FileEnvironment:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        owner_user_id: { type: string }
+        team_id: { type: string }
+        project_id: { type: string }
+        member_user_ids:
+          type: array
+          items: { type: string }
+
+    FileMembersRequest:
+      type: object
+      required: [team_id, project_id, user_ids]
+      properties:
+        team_id: { type: string }
+        project_id: { type: string }
+        user_ids:
+          type: array
+          items: { type: string }
+          minItems: 1
+
+    FilePathRequest:
+      type: object
+      required: [team_id, project_id, path]
+      properties:
+        team_id: { type: string }
+        project_id: { type: string }
+        path: { type: string }
+
+    FileRenameRequest:
+      type: object
+      required: [team_id, project_id, old_path, new_path]
+      properties:
+        team_id: { type: string }
+        project_id: { type: string }
+        old_path: { type: string }
+        new_path: { type: string }
+
+    FileEntry:
+      type: object
+      properties:
+        name: { type: string }
+        path: { type: string }
+        kind: { type: string, enum: [file, directory] }
+        size_bytes: { type: integer }
+
+    FileEntryListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileEntry'
+
+    TaskFileAgentRequest:
+      type: object
+      required: [request_id, message, team_id, project_id]
+      properties:
+        request_id: { type: string }
+        message: { type: string }
+        team_id: { type: string }
+        project_id: { type: string }
+        max_iterations: { type: integer, minimum: 1, maximum: 12, default: 8 }
+        include_capabilities: { type: boolean, default: true }
+
+    TaskFileAgentResponse:
+      type: object
+      properties:
+        request_id: { type: string }
+        answer: { type: string }
+        succeeded: { type: boolean }
+        tool_calls: { type: array, items: { type: object } }
+        capabilities: { type: array, items: { type: object } }
+
+    TaskNameDescriptionRequest:
+      type: object
+      required: [request_id, raw_task_description]
+      properties:
+        request_id: { type: string }
+        raw_task_description: { type: string }
+        current_task_name: { type: string }
+
+    TaskNameDescriptionResponse:
+      type: object
+      properties:
+        request_id: { type: string }
+        raw_task_description: { type: string }
+        task_name: { type: string }
+        task_description: { type: string }
+
+    CallSession:
+      type: object
+      properties:
+        id: { type: string }
+        initiator_id: { type: string }
+        created_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+        status: { type: string, enum: [active, ended] }
+        ice_servers:
+          type: array
+          items:
+            type: object
+            additionalProperties: { type: string }
+

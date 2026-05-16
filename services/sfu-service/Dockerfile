@@ -3,6 +3,7 @@ WORKDIR /build
 
 # Copy service sources
 COPY services/sfu-service .
+COPY libs/observability-go /libs/observability-go
 
 RUN apk add --no-cache git ca-certificates \
  && go mod tidy \

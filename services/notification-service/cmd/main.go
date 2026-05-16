@@ -20,6 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	observability "observability-go"
 )
 
 type config struct {
@@ -113,11 +114,14 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", a.healthz)
 	mux.HandleFunc("/readyz", a.readyz)
+	mux.Handle("/metrics", observability.MetricsHandler())
 	mux.HandleFunc("/v1/projects/", a.auth(a.projectSettings))
 	mux.HandleFunc("/v1/tasks/", a.auth(a.taskNotification))
 
-	log.Printf("notification-service starting on %s", cfg.HTTPAddr)
-	if err := http.ListenAndServe(cfg.HTTPAddr, a.withCORS(mux)); err != nil {
+	logger := observability.NewLogger("notification-service")
+	logger.Info("notification-service starting", "addr", cfg.HTTPAddr)
+	handler := observability.NewHTTPMetrics("notification-service").Middleware(logger, a.withCORS(mux))
+	if err := http.ListenAndServe(cfg.HTTPAddr, handler); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}
 }
