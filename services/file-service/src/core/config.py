@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     file_service_agent_commands_queue: str = "file-service.agent-commands"
     file_service_rpc_timeout_seconds: float = 3.0
 
+    jwt_secret: str = ""
     cors_allow_origin: str = "*"
 
 

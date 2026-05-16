@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps import get_current_user_id
+from src.api.deps import AuthContext, get_auth_context, require_team_access
 from src.api.schemas import (
     AddMembersRequest,
     CreateFolderRequest,
@@ -55,44 +55,48 @@ def get_storage_service(
 @router.post("/ensure", response_model=EnvironmentResponse)
 async def ensure_environment(
     payload: EnsureEnvironmentRequest,
-    actor_user_id: str = Depends(get_current_user_id),
+    auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    environment = await service.ensure_environment(payload.team_id, payload.project_id, actor_user_id)
-    audit("file_environment_ensured", actor_user_id, payload.team_id, payload.project_id)
+    require_team_access(auth, payload.team_id)
+    environment = await service.ensure_environment(payload.team_id, payload.project_id, auth.user_id)
+    audit("file_environment_ensured", auth.user_id, payload.team_id, payload.project_id)
     return environment
 
 
 @router.post("/members")
 async def add_members(
     payload: AddMembersRequest,
-    actor_user_id: str = Depends(get_current_user_id),
+    auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    members = await service.add_members(payload.team_id, payload.project_id, actor_user_id, payload.user_ids)
-    audit("file_environment_members_added", actor_user_id, payload.team_id, payload.project_id, member_count=len(payload.user_ids))
+    require_team_access(auth, payload.team_id)
+    members = await service.add_members(payload.team_id, payload.project_id, auth.user_id, payload.user_ids)
+    audit("file_environment_members_added", auth.user_id, payload.team_id, payload.project_id, member_count=len(payload.user_ids))
     return {"members": members}
 
 
 @router.delete("/members")
 async def remove_members(
     payload: RemoveMembersRequest,
-    actor_user_id: str = Depends(get_current_user_id),
+    auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    members = await service.remove_members(payload.team_id, payload.project_id, actor_user_id, payload.user_ids)
-    audit("file_environment_members_removed", actor_user_id, payload.team_id, payload.project_id, member_count=len(payload.user_ids))
+    require_team_access(auth, payload.team_id)
+    members = await service.remove_members(payload.team_id, payload.project_id, auth.user_id, payload.user_ids)
+    audit("file_environment_members_removed", auth.user_id, payload.team_id, payload.project_id, member_count=len(payload.user_ids))
     return {"members": members}
 
 
 @router.post("/folders")
 async def create_folder(
     payload: CreateFolderRequest,
-    actor_user_id: str = Depends(get_current_user_id),
+    auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    await service.create_folder(payload.team_id, payload.project_id, actor_user_id, payload.path)
-    audit("file_folder_created", actor_user_id, payload.team_id, payload.project_id, **path_meta(payload.path))
+    require_team_access(auth, payload.team_id)
+    await service.create_folder(payload.team_id, payload.project_id, auth.user_id, payload.path)
+    audit("file_folder_created", auth.user_id, payload.team_id, payload.project_id, **path_meta(payload.path))
     return {"status": "ok"}
 
 
@@ -102,13 +106,14 @@ async def upload_file(
     project_id: str = Query(...),
     directory: str = Query(default="."),
     file: UploadFile = File(...),
-    actor_user_id: str = Depends(get_current_user_id),
+    auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    stored_path = await service.upload_file(team_id, project_id, actor_user_id, directory, file)
+    require_team_access(auth, team_id)
+    stored_path = await service.upload_file(team_id, project_id, auth.user_id, directory, file)
     audit(
         "file_uploaded",
-        actor_user_id,
+        auth.user_id,
         team_id,
         project_id,
         content_type=(file.content_type or "")[:80],
@@ -120,24 +125,26 @@ async def upload_file(
 @router.delete("/entries")
 async def delete_entry(
     payload: DeleteEntryRequest,
-    actor_user_id: str = Depends(get_current_user_id),
+    auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    await service.delete_entry(payload.team_id, payload.project_id, actor_user_id, payload.path)
-    audit("file_entry_deleted", actor_user_id, payload.team_id, payload.project_id, **path_meta(payload.path))
+    require_team_access(auth, payload.team_id)
+    await service.delete_entry(payload.team_id, payload.project_id, auth.user_id, payload.path)
+    audit("file_entry_deleted", auth.user_id, payload.team_id, payload.project_id, **path_meta(payload.path))
     return {"status": "ok"}
 
 
 @router.patch("/entries/rename")
 async def rename_entry(
     payload: RenameEntryRequest,
-    actor_user_id: str = Depends(get_current_user_id),
+    auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    await service.rename_entry(payload.team_id, payload.project_id, actor_user_id, payload.old_path, payload.new_path)
+    require_team_access(auth, payload.team_id)
+    await service.rename_entry(payload.team_id, payload.project_id, auth.user_id, payload.old_path, payload.new_path)
     audit(
         "file_entry_renamed",
-        actor_user_id,
+        auth.user_id,
         payload.team_id,
         payload.project_id,
         old_path_depth=path_meta(payload.old_path)["path_depth"],
@@ -152,11 +159,12 @@ async def download_file(
     team_id: str = Query(...),
     project_id: str = Query(...),
     path: str = Query(...),
-    actor_user_id: str = Depends(get_current_user_id),
+    auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    file_path = await service.get_file_for_download(team_id, project_id, actor_user_id, path)
-    audit("file_downloaded", actor_user_id, team_id, project_id, **path_meta(path))
+    require_team_access(auth, team_id)
+    file_path = await service.get_file_for_download(team_id, project_id, auth.user_id, path)
+    audit("file_downloaded", auth.user_id, team_id, project_id, **path_meta(path))
     return FileResponse(file_path, media_type="application/octet-stream", filename=file_path.name)
 
 
@@ -165,12 +173,13 @@ async def view_file(
     team_id: str = Query(...),
     project_id: str = Query(...),
     path: str = Query(...),
-    actor_user_id: str = Depends(get_current_user_id),
+    auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    file_path = await service.get_file_for_download(team_id, project_id, actor_user_id, path)
+    require_team_access(auth, team_id)
+    file_path = await service.get_file_for_download(team_id, project_id, auth.user_id, path)
     media_type, _ = mimetypes.guess_type(str(file_path))
-    audit("file_viewed", actor_user_id, team_id, project_id, media_type=(media_type or "")[:80], **path_meta(path))
+    audit("file_viewed", auth.user_id, team_id, project_id, media_type=(media_type or "")[:80], **path_meta(path))
     return FileResponse(file_path, media_type=media_type or "application/octet-stream", filename=file_path.name)
 
 
@@ -179,8 +188,9 @@ async def list_entries(
     team_id: str = Query(...),
     project_id: str = Query(...),
     directory: str = Query(default="."),
-    actor_user_id: str = Depends(get_current_user_id),
+    auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    items = await service.list_entries(team_id, project_id, actor_user_id, directory)
+    require_team_access(auth, team_id)
+    items = await service.list_entries(team_id, project_id, auth.user_id, directory)
     return {"items": items}

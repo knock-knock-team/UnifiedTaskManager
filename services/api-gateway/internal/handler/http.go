@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -157,7 +156,7 @@ func (h *HTTPHandler) withCORS(next http.HandlerFunc) http.HandlerFunc {
 			origin = "*"
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Team-Id, X-Gateway-User-Id, X-Gateway-Role, If-Match")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Team-Id, If-Match")
 		w.Header().Set("Access-Control-Expose-Headers", "ETag")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
@@ -315,6 +314,12 @@ func (h *HTTPHandler) injectIdentityHeaders(r *http.Request, claims *service.Cla
 	if claims == nil {
 		return
 	}
+	r.Header.Del("X-Gateway-User-Id")
+	r.Header.Del("X-Gateway-Role")
+	r.Header.Del("X-Gateway-Team-Id")
+	r.Header.Del("X-Gateway-Team-Ids")
+	r.Header.Del("X-User-Id")
+	r.Header.Del("X-User-Role")
 	r.Header.Set("X-Gateway-User-Id", claims.Subject)
 	r.Header.Set("X-Gateway-Role", claims.Role)
 	r.Header.Set("X-User-Id", claims.Subject)
@@ -384,7 +389,8 @@ func newProxy(target *url.URL) *httputil.ReverseProxy {
 		req.Header.Set("X-Forwarded-Host", req.Host)
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"message": fmt.Sprintf("upstream unavailable: %v", err)})
+		log.Printf("upstream unavailable for %s %s: %v", r.Method, r.URL.Path, err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"message": "upstream unavailable"})
 	}
 	return proxy
 }
@@ -402,7 +408,8 @@ func newCallProxy(target *url.URL) *httputil.ReverseProxy {
 		}
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"message": fmt.Sprintf("upstream unavailable: %v", err)})
+		log.Printf("call upstream unavailable for %s %s: %v", r.Method, r.URL.Path, err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"message": "upstream unavailable"})
 	}
 	return proxy
 }

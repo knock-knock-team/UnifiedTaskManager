@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from src.mq.schemas import FileDeletedEvent, TaskAttachmentRecord, UserExistsReq
 logger = logging.getLogger("file-service.storage")
 TEAM_QUOTA_BYTES = 100 * 1024 * 1024
 ATTACHMENTS_ROOT = ".assistant/task-attachments"
+SCOPE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 
 class StorageService:
@@ -28,8 +30,8 @@ class StorageService:
         self.storage_root.mkdir(parents=True, exist_ok=True)
 
     async def ensure_environment(self, team_id: str, project_id: str, actor_user_id: str) -> dict:
-        team_id = team_id.strip()
-        project_id = project_id.strip()
+        team_id = self._safe_scope_id(team_id, "team_id")
+        project_id = self._safe_scope_id(project_id, "project_id")
         if not team_id or not project_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="team_id and project_id are required")
         env = await self.repo.get_environment_by_scope(team_id, project_id)
@@ -255,7 +257,9 @@ class StorageService:
         return env
 
     async def _ensure_access_scoped(self, team_id: str, project_id: str, actor_user_id: str):
-        env = await self.repo.get_environment_by_scope(team_id.strip(), project_id.strip())
+        team_id = self._safe_scope_id(team_id, "team_id")
+        project_id = self._safe_scope_id(project_id, "project_id")
+        env = await self.repo.get_environment_by_scope(team_id, project_id)
         if env is None:
             ensured = await self.ensure_environment(team_id, project_id, actor_user_id)
             env = await self.repo.get_environment(ensured["id"])
@@ -319,6 +323,15 @@ class StorageService:
             logger.warning("file_invalid_path_rejected", extra={"event_type": "file_invalid_path_rejected", "path_depth": len(Path(relative_path or "").parts)})
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path")
         return target
+
+    def _safe_scope_id(self, value: str, field_name: str) -> str:
+        normalized = (value or "").strip()
+        if not normalized:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{field_name} is required")
+        if not SCOPE_ID_RE.match(normalized):
+            logger.warning("file_invalid_scope_rejected", extra={"event_type": "file_invalid_scope_rejected", "field": field_name})
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid {field_name}")
+        return normalized
 
     def _attachments_manifest_path(self, root: str, task_id: str) -> Path:
         return self._safe_path(root, f"{ATTACHMENTS_ROOT}/{task_id.strip()}.json")
