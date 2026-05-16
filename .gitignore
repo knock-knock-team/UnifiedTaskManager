@@ -3,6 +3,7 @@
 Thumbs.db
 
 # Environment files
+.env.production
 .env.local
 .env.*.local
 .env

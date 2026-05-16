@@ -1,0 +1,21 @@
+run:
+  deadline: 5m
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - gofmt
+    - ineffassign
+    - deadcode
+    - unused
+    - structcheck
+    - typecheck
+    - gosimple
+
+issues:
+  exclude-use-default: false
+
+output:
+  format: colored-line-number
