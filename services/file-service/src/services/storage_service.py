@@ -1,7 +1,10 @@
+import json
 import logging
 import os
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,10 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import settings
 from src.db.repository import EnvironmentRepository
 from src.mq.client import MqClient
-from src.mq.schemas import FileDeletedEvent, UserExistsRequest, UserExistsResponse
+from src.mq.schemas import FileDeletedEvent, TaskAttachmentRecord, UserExistsRequest, UserExistsResponse
 
 logger = logging.getLogger("file-service.storage")
 TEAM_QUOTA_BYTES = 100 * 1024 * 1024
+ATTACHMENTS_ROOT = ".assistant/task-attachments"
 
 
 class StorageService:
@@ -143,6 +147,67 @@ class StorageService:
             )
         return items
 
+    async def attach_file_to_task(
+        self,
+        team_id: str,
+        project_id: str,
+        actor_user_id: str,
+        task_id: str,
+        file_path: str,
+        display_name: str | None = None,
+    ) -> dict:
+        env = await self._ensure_access_scoped(team_id, project_id, actor_user_id)
+        target = self._safe_path(env.root_path, file_path)
+        if not target.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+        attachments = self._load_task_attachments(env.root_path, task_id)
+        normalized_path = str(target.relative_to(Path(env.root_path)))
+        for item in attachments:
+            if item.file_path == normalized_path:
+                return item.model_dump(mode="json")
+        attachment = TaskAttachmentRecord(
+            attachment_id=str(uuid4()),
+            task_id=task_id.strip(),
+            file_path=normalized_path,
+            file_name=(display_name or target.name).strip() or target.name,
+            attached_at=datetime.now(timezone.utc).isoformat(),
+        )
+        attachments.append(attachment)
+        self._save_task_attachments(env.root_path, task_id, attachments)
+        return attachment.model_dump(mode="json")
+
+    async def detach_file_from_task(
+        self,
+        team_id: str,
+        project_id: str,
+        actor_user_id: str,
+        task_id: str,
+        attachment_id: str | None = None,
+        file_path: str | None = None,
+    ) -> list[dict]:
+        env = await self._ensure_access_scoped(team_id, project_id, actor_user_id)
+        attachments = self._load_task_attachments(env.root_path, task_id)
+        filtered = [
+            item
+            for item in attachments
+            if item.attachment_id != (attachment_id or "").strip()
+            and item.file_path != (file_path or "").strip()
+        ]
+        if len(filtered) == len(attachments):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+        self._save_task_attachments(env.root_path, task_id, filtered)
+        return [item.model_dump(mode="json") for item in filtered]
+
+    async def list_task_attachments(
+        self,
+        team_id: str,
+        project_id: str,
+        actor_user_id: str,
+        task_id: str,
+    ) -> list[dict]:
+        env = await self._ensure_access_scoped(team_id, project_id, actor_user_id)
+        return [item.model_dump(mode="json") for item in self._load_task_attachments(env.root_path, task_id)]
+
     async def _assert_user_exists(self, user_id: str) -> None:
         if not settings.file_service_rabbitmq_enabled or self.mq_client is None:
             return
@@ -244,3 +309,30 @@ class StorageService:
         if target != root_path and root_path not in target.parents:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path")
         return target
+
+    def _attachments_manifest_path(self, root: str, task_id: str) -> Path:
+        return self._safe_path(root, f"{ATTACHMENTS_ROOT}/{task_id.strip()}.json")
+
+    def _load_task_attachments(self, root: str, task_id: str) -> list[TaskAttachmentRecord]:
+        manifest_path = self._attachments_manifest_path(root, task_id)
+        if not manifest_path.exists():
+            return []
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        items = payload.get("attachments", []) if isinstance(payload, dict) else []
+        return [TaskAttachmentRecord.model_validate(item) for item in items]
+
+    def _save_task_attachments(self, root: str, task_id: str, attachments: list[TaskAttachmentRecord]) -> None:
+        manifest_path = self._attachments_manifest_path(root, task_id)
+        if not attachments:
+            if manifest_path.exists():
+                manifest_path.unlink()
+            return
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "task_id": task_id.strip(),
+            "attachments": [item.model_dump(mode="json") for item in attachments],
+        }
+        manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
