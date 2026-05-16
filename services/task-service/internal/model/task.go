@@ -25,12 +25,15 @@ type Task struct {
 	Status         TaskStatus   `json:"status"`
 	Priority       TaskPriority `json:"priority"`
 	DueAt          *time.Time   `json:"dueAt,omitempty"`
+	CompletedAt    *time.Time   `json:"completedAt,omitempty"`
+	CompletedBy    string       `json:"completedBy,omitempty"`
 	CreatedBy      string       `json:"createdBy"`
 	AssigneeUserID string       `json:"assigneeUserId,omitempty"`
 	AssigneeName   string       `json:"assigneeName,omitempty"`
 	TeamID         string       `json:"teamId,omitempty"`
 	ProjectID      string       `json:"projectId,omitempty"`
 	UnreadComments int          `json:"unreadComments,omitempty"`
+	Version        int64        `json:"version"`
 	CreatedAt      time.Time    `json:"createdAt"`
 	UpdatedAt      time.Time    `json:"updatedAt"`
 }
@@ -50,6 +53,7 @@ type TaskColumn struct {
 	ProjectID string    `json:"projectId"`
 	Title     string    `json:"title"`
 	Position  int       `json:"position"`
+	Version   int64     `json:"version"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

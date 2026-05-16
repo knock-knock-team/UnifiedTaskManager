@@ -29,19 +29,29 @@ type CreateTaskInput struct {
 }
 
 type UpdateTaskInput struct {
-	Title          *string    `json:"title"`
-	Description    *string    `json:"description"`
-	Status         *string    `json:"status"`
-	Priority       *string    `json:"priority"`
-	DueAt          *time.Time `json:"dueAt"`
-	AssigneeUserID *string    `json:"assigneeUserId"`
-	AssigneeName   *string    `json:"assigneeName"`
+	Title            *string    `json:"title"`
+	Description      *string    `json:"description"`
+	Status           *string    `json:"status"`
+	Priority         *string    `json:"priority"`
+	DueAt            *time.Time `json:"dueAt"`
+	AssigneeUserID   *string    `json:"assigneeUserId"`
+	AssigneeName     *string    `json:"assigneeName"`
+	Completed        *bool      `json:"completed"`
+	ActorUserID      string
+	ExpectedVersion  *int64
+	SkipVersionCheck bool
 }
 
 type CreateColumnInput struct {
 	TeamID    string
 	ProjectID string
 	Title     string
+}
+
+type UpdateColumnInput struct {
+	Title           *string `json:"title"`
+	ExpectedVersion *int64
+	SkipVersionCheck bool
 }
 
 type CreateCommentInput struct {
@@ -55,6 +65,7 @@ type TaskService struct {
 	repo          repository.TaskStore
 	publisher     event.TaskEventPublisher
 	userDirectory UserDirectory
+	board         BoardNotifier
 }
 
 func NewTaskService(repo repository.TaskStore, publisher event.TaskEventPublisher, userDirectory UserDirectory) *TaskService {
@@ -62,6 +73,10 @@ func NewTaskService(repo repository.TaskStore, publisher event.TaskEventPublishe
 		userDirectory = NewNoopUserDirectory()
 	}
 	return &TaskService{repo: repo, publisher: publisher, userDirectory: userDirectory}
+}
+
+func (s *TaskService) SetBoardNotifier(board BoardNotifier) {
+	s.board = board
 }
 
 func (s *TaskService) Create(input CreateTaskInput) (model.Task, error) {
@@ -104,6 +119,11 @@ func (s *TaskService) Create(input CreateTaskInput) (model.Task, error) {
 		ProjectID:      projectID,
 		CreatedAt:      now,
 		UpdatedAt:      now,
+		Version:        1,
+	}
+	if task.Status == model.TaskStatusDone {
+		task.CompletedAt = &now
+		task.CompletedBy = createdBy
 	}
 	created, err := s.repo.Create(task)
 	if err != nil {
@@ -111,6 +131,9 @@ func (s *TaskService) Create(input CreateTaskInput) (model.Task, error) {
 	}
 	if s.publisher != nil {
 		_ = s.publisher.PublishTaskCreated(context.Background(), created)
+	}
+	if s.board != nil {
+		s.board.TaskCreated(createdBy, created)
 	}
 	return created, nil
 }
@@ -143,6 +166,8 @@ func (s *TaskService) Update(id string, input UpdateTaskInput) (model.Task, erro
 		return model.Task{}, err
 	}
 
+	completionExplicitlyUpdated := false
+
 	if input.Title != nil {
 		title := strings.TrimSpace(*input.Title)
 		if title == "" {
@@ -155,6 +180,12 @@ func (s *TaskService) Update(id string, input UpdateTaskInput) (model.Task, erro
 	}
 	if input.Status != nil {
 		current.Status = normalizeStatus(*input.Status)
+		if current.Status == model.TaskStatusDone && current.CompletedAt == nil {
+			now := time.Now().UTC()
+			current.CompletedAt = &now
+			current.CompletedBy = strings.TrimSpace(input.ActorUserID)
+			completionExplicitlyUpdated = true
+		}
 	}
 	if input.Priority != nil {
 		current.Priority = normalizePriority(*input.Priority)
@@ -178,19 +209,54 @@ func (s *TaskService) Update(id string, input UpdateTaskInput) (model.Task, erro
 	if input.AssigneeName != nil {
 		current.AssigneeName = strings.TrimSpace(*input.AssigneeName)
 	}
+	if input.Completed != nil {
+		completionExplicitlyUpdated = true
+		if *input.Completed {
+			if current.CompletedAt == nil {
+				now := time.Now().UTC()
+				current.CompletedAt = &now
+			}
+			current.CompletedBy = strings.TrimSpace(input.ActorUserID)
+		} else {
+			current.CompletedAt = nil
+			current.CompletedBy = ""
+		}
+	}
+	if !completionExplicitlyUpdated && current.CompletedAt == nil && current.Status == model.TaskStatusDone {
+		now := time.Now().UTC()
+		current.CompletedAt = &now
+		current.CompletedBy = strings.TrimSpace(input.ActorUserID)
+	}
 	current.UpdatedAt = time.Now().UTC()
 
-	updated, err := s.repo.Update(current)
-	if err != nil {
-		return model.Task{}, err
+	var updated model.Task
+	var updateErr error
+	switch {
+	case input.SkipVersionCheck || input.ExpectedVersion == nil:
+		updated, updateErr = s.repo.Update(current)
+	default:
+		updated, updateErr = s.repo.UpdateIfVersion(current, *input.ExpectedVersion)
+	}
+	if errors.Is(updateErr, repository.ErrVersionConflict) {
+		latest, getErr := s.repo.GetByID(strings.TrimSpace(id))
+		if getErr != nil {
+			return model.Task{}, getErr
+		}
+		return model.Task{}, NewTaskVersionConflict(latest)
+	}
+	if updateErr != nil {
+		return model.Task{}, updateErr
 	}
 	if s.publisher != nil {
 		_ = s.publisher.PublishTaskUpdated(context.Background(), updated)
 	}
+	if s.board != nil {
+		s.board.TaskUpdated(strings.TrimSpace(input.ActorUserID), updated)
+	}
 	return updated, nil
 }
 
-func (s *TaskService) Delete(id string) error {
+func (s *TaskService) Delete(id, actorID string) error {
 	trimmedID := strings.TrimSpace(id)
 	current, err := s.repo.GetByID(trimmedID)
 	if err != nil {
@@ -201,6 +267,9 @@ func (s *TaskService) Delete(id string) error {
 	}
 	if s.publisher != nil {
 		_ = s.publisher.PublishTaskDeleted(context.Background(), current)
+	}
+	if s.board != nil {
+		s.board.TaskDeleted(strings.TrimSpace(actorID), current.TeamID, current.ProjectID, current.ID)
 	}
 	return nil
 }
@@ -241,6 +310,11 @@ func (s *TaskService) AddComment(input CreateCommentInput) (model.TaskComment, e
 	}
 	if err := s.repo.MarkTaskCommentsRead(taskID, userID, created.CreatedAt); err != nil {
 		return model.TaskComment{}, err
+	}
+	if s.board != nil {
+		if task, err := s.repo.GetByID(taskID); err == nil {
+			s.board.CommentAdded(userID, task, created)
+		}
 	}
 	return created, nil
 }
@@ -302,10 +376,14 @@ func (s *TaskService) CreateColumn(input CreateColumnInput) (model.TaskColumn, e
 		Position:  maxPosition + 1,
 		CreatedAt: now,
 		UpdatedAt: now,
+		Version:   1,
 	}
 	created, err := s.repo.CreateColumn(column)
 	if err != nil {
 		return model.TaskColumn{}, err
+	}
+	if s.board != nil {
+		s.board.ColumnCreated("", created)
 	}
 	return created, nil
 }
@@ -326,7 +404,7 @@ func (s *TaskService) GetColumnByID(id string) (model.TaskColumn, error) {
 	return s.repo.GetColumnByID(id)
 }
 
-func (s *TaskService) DeleteColumn(id string) error {
+func (s *TaskService) DeleteColumn(id, actorID string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return ErrBadRequest
@@ -342,10 +420,58 @@ func (s *TaskService) DeleteColumn(id string) error {
 	if count > 0 {
 		return ErrBadRequest
 	}
-	return s.repo.DeleteColumn(id)
+	if err := s.repo.DeleteColumn(id); err != nil {
+		return err
+	}
+	if s.board != nil {
+		s.board.ColumnDeleted(strings.TrimSpace(actorID), column.TeamID, column.ProjectID, column.ID)
+	}
+	return nil
 }
 
-func (s *TaskService) ReorderColumns(projectID string, orderedIDs []string) error {
+func (s *TaskService) UpdateColumn(id string, input UpdateColumnInput) (model.TaskColumn, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return model.TaskColumn{}, ErrBadRequest
+	}
+	current, err := s.repo.GetColumnByID(id)
+	if err != nil {
+		return model.TaskColumn{}, err
+	}
+	if input.Title != nil {
+		title := strings.TrimSpace(*input.Title)
+		if title == "" {
+			return model.TaskColumn{}, ErrBadRequest
+		}
+		current.Title = title
+	}
+	current.UpdatedAt = time.Now().UTC()
+
+	var updated model.TaskColumn
+	var updateErr error
+	switch {
+	case input.SkipVersionCheck || input.ExpectedVersion == nil:
+		updated, updateErr = s.repo.UpdateColumn(current)
+	default:
+		updated, updateErr = s.repo.UpdateColumnIfVersion(current, *input.ExpectedVersion)
+	}
+	if errors.Is(updateErr, repository.ErrVersionConflict) {
+		latest, getErr := s.repo.GetColumnByID(id)
+		if getErr != nil {
+			return model.TaskColumn{}, getErr
+		}
+		return model.TaskColumn{}, NewColumnVersionConflict(latest)
+	}
+	if updateErr != nil {
+		return model.TaskColumn{}, updateErr
+	}
+	if s.board != nil {
+		s.board.ColumnUpdated("", updated)
+	}
+	return updated, nil
+}
+
+func (s *TaskService) ReorderColumns(projectID, actorID string, orderedIDs []string, expectedVersions map[string]int64) error {
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
 		return ErrBadRequest
@@ -356,6 +482,17 @@ func (s *TaskService) ReorderColumns(projectID string, orderedIDs []string) erro
 	}
 	if len(columns) == 0 {
 		return nil
+	}
+	if len(expectedVersions) > 0 {
+		for _, column := range columns {
+			expected, ok := expectedVersions[column.ID]
+			if !ok {
+				continue
+			}
+			if column.Version != expected {
+				return &VersionConflictError{EntityType: "columns", Current: columns}
+			}
+		}
 	}
 
 	indexByID := make(map[string]int, len(columns))
@@ -387,6 +524,13 @@ func (s *TaskService) ReorderColumns(projectID string, orderedIDs []string) erro
 	for index, id := range finalOrder {
 		if err := s.repo.UpdateColumnPosition(id, index); err != nil {
 			return err
+		}
+	}
+	if s.board != nil {
+		items, err := s.repo.ListColumnsByProject(projectID)
+		if err == nil && len(items) > 0 {
+			teamID := items[0].TeamID
+			s.board.ColumnsReordered(strings.TrimSpace(actorID), teamID, projectID, items)
 		}
 	}
 	return nil

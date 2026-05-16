@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"UnifiedTaskManager/services/task-service/internal/board"
 	"UnifiedTaskManager/services/task-service/internal/repository"
 	"UnifiedTaskManager/services/task-service/internal/service"
 )
@@ -24,14 +25,15 @@ const (
 
 type HTTPHandler struct {
 	svc         *service.TaskService
+	boardHub    *board.DistributedHub
 	ping        func(context.Context) error
 	tokens      *service.TokenManager
 	permissions *service.PermissionClient
 	allowOrigin string
 }
 
-func NewHTTPHandler(svc *service.TaskService, ping func(context.Context) error, tokens *service.TokenManager, permissions *service.PermissionClient) *HTTPHandler {
-	return &HTTPHandler{svc: svc, ping: ping, tokens: tokens, permissions: permissions, allowOrigin: "*"}
+func NewHTTPHandler(svc *service.TaskService, boardHub *board.DistributedHub, ping func(context.Context) error, tokens *service.TokenManager, permissions *service.PermissionClient) *HTTPHandler {
+	return &HTTPHandler{svc: svc, boardHub: boardHub, ping: ping, tokens: tokens, permissions: permissions, allowOrigin: "*"}
 }
 
 func (h *HTTPHandler) SetCORSAllowOrigin(origin string) {
@@ -50,6 +52,7 @@ func (h *HTTPHandler) Routes() http.Handler {
 	mux.HandleFunc("/v1/task-columns/", h.auth(h.taskColumnByID))
 	mux.HandleFunc("/v1/tasks", h.auth(h.tasks))
 	mux.HandleFunc("/v1/tasks/", h.auth(h.taskByID))
+	mux.HandleFunc("/v1/boards/stream", h.auth(h.boardStream))
 	return h.withCORS(mux)
 }
 
@@ -83,7 +86,8 @@ func (h *HTTPHandler) withCORS(next http.Handler) http.Handler {
 			origin = "*"
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Team-Id")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Team-Id, If-Match")
+		w.Header().Set("Access-Control-Expose-Headers", "ETag")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -96,11 +100,17 @@ func (h *HTTPHandler) withCORS(next http.Handler) http.Handler {
 func (h *HTTPHandler) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		header := strings.TrimSpace(r.Header.Get("Authorization"))
-		if !strings.HasPrefix(strings.ToLower(header), "bearer ") {
+		token := ""
+		if strings.HasPrefix(strings.ToLower(header), "bearer ") {
+			token = strings.TrimSpace(header[len("Bearer "):])
+		}
+		if token == "" {
+			token = strings.TrimSpace(r.URL.Query().Get("token"))
+		}
+		if token == "" {
 			writeError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
-		token := strings.TrimSpace(header[len("Bearer "):])
 		claims, err := h.tokens.Parse(token, "access")
 		if err != nil || claims.Subject == "" {
 			writeError(w, http.StatusUnauthorized, "Invalid token")
@@ -201,12 +211,13 @@ func (h *HTTPHandler) reorderTaskColumns(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req struct {
-		IDs []string `json:"ids"`
+		IDs      []string          `json:"ids"`
+		Versions map[string]int64  `json:"versions"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if err := h.svc.ReorderColumns(projectID, req.IDs); err != nil {
+	if err := h.svc.ReorderColumns(projectID, currentUserID(r.Context()), req.IDs, req.Versions); err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
@@ -225,11 +236,6 @@ func (h *HTTPHandler) taskColumnByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "column id is required")
 		return
 	}
-	if r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
 	column, err := h.svc.GetColumnByID(id)
 	if err != nil {
 		h.writeServiceError(w, err)
@@ -238,11 +244,33 @@ func (h *HTTPHandler) taskColumnByID(w http.ResponseWriter, r *http.Request) {
 	if !h.ensureProjectPermission(w, r, column.TeamID, column.ProjectID, "tasks.write") {
 		return
 	}
-	if err := h.svc.DeleteColumn(id); err != nil {
-		h.writeServiceError(w, err)
-		return
+	switch r.Method {
+	case http.MethodPatch:
+		var req struct {
+			Title *string `json:"title"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		input := service.UpdateColumnInput{Title: req.Title}
+		if version, ok := service.ParseIfMatchHeader(r.Header.Get("If-Match")); ok {
+			input.ExpectedVersion = &version
+		}
+		updated, err := h.svc.UpdateColumn(id, input)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeColumnJSON(w, http.StatusOK, updated)
+	case http.MethodDelete:
+		if err := h.svc.DeleteColumn(id, currentUserID(r.Context())); err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *HTTPHandler) taskByID(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +314,7 @@ func (h *HTTPHandler) taskByID(w http.ResponseWriter, r *http.Request) {
 		if !h.ensureProjectPermission(w, r, task.TeamID, task.ProjectID, "tasks.read") {
 			return
 		}
-		writeJSON(w, http.StatusOK, task)
+		writeTaskJSON(w, http.StatusOK, task)
 	case http.MethodPatch:
 		task, err := h.svc.GetByID(id)
 		if err != nil {
@@ -306,7 +334,7 @@ func (h *HTTPHandler) taskByID(w http.ResponseWriter, r *http.Request) {
 		if !h.ensureProjectPermission(w, r, task.TeamID, task.ProjectID, "tasks.write") {
 			return
 		}
-		if err := h.svc.Delete(id); err != nil {
+		if err := h.svc.Delete(id, currentUserID(r.Context())); err != nil {
 			h.writeServiceError(w, err)
 			return
 		}
@@ -360,7 +388,7 @@ func (h *HTTPHandler) createTask(w http.ResponseWriter, r *http.Request) {
 		h.writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, task)
+	writeTaskJSON(w, http.StatusCreated, task)
 }
 
 func (h *HTTPHandler) listTasks(w http.ResponseWriter, r *http.Request) {
@@ -415,12 +443,13 @@ func (h *HTTPHandler) updateTask(w http.ResponseWriter, r *http.Request, id stri
 		DueAt          *time.Time `json:"dueAt"`
 		AssigneeUserID *string    `json:"assigneeUserId"`
 		AssigneeName   *string    `json:"assigneeName"`
+		Completed      *bool      `json:"completed"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 
-	updated, err := h.svc.Update(id, service.UpdateTaskInput{
+	input := service.UpdateTaskInput{
 		Title:          req.Title,
 		Description:    req.Description,
 		Status:         req.Status,
@@ -428,12 +457,18 @@ func (h *HTTPHandler) updateTask(w http.ResponseWriter, r *http.Request, id stri
 		DueAt:          req.DueAt,
 		AssigneeUserID: req.AssigneeUserID,
 		AssigneeName:   req.AssigneeName,
-	})
+		Completed:      req.Completed,
+		ActorUserID:    currentUserID(r.Context()),
+	}
+	if version, ok := service.ParseIfMatchHeader(r.Header.Get("If-Match")); ok {
+		input.ExpectedVersion = &version
+	}
+	updated, err := h.svc.Update(id, input)
 	if err != nil {
 		h.writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	writeTaskJSON(w, http.StatusOK, updated)
 }
 
 func (h *HTTPHandler) taskComments(w http.ResponseWriter, r *http.Request, taskID string) {
@@ -522,6 +557,11 @@ func (h *HTTPHandler) taskCommentByID(w http.ResponseWriter, r *http.Request, ta
 }
 
 func (h *HTTPHandler) writeServiceError(w http.ResponseWriter, err error) {
+	var conflict *service.VersionConflictError
+	if errors.As(err, &conflict) {
+		writeVersionConflict(w, conflict)
+		return
+	}
 	switch {
 	case errors.Is(err, service.ErrBadRequest):
 		writeError(w, http.StatusBadRequest, "bad request")

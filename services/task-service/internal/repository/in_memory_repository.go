@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -10,8 +9,6 @@ import (
 
 	"UnifiedTaskManager/services/task-service/internal/model"
 )
-
-var ErrNotFound = errors.New("task not found")
 
 type TaskStore interface {
 	Create(task model.Task) (model.Task, error)
@@ -24,6 +21,8 @@ type TaskStore interface {
 	GetColumnByID(id string) (model.TaskColumn, error)
 	ListColumnsByProject(projectID string) ([]model.TaskColumn, error)
 	GetMaxColumnPosition(projectID string) (int, error)
+	UpdateColumn(column model.TaskColumn) (model.TaskColumn, error)
+	UpdateColumnIfVersion(column model.TaskColumn, expectedVersion int64) (model.TaskColumn, error)
 	UpdateColumnPosition(id string, position int) error
 	DeleteColumn(id string) error
 	CountByProjectAndStatus(projectID, status string) (int, error)
@@ -34,6 +33,7 @@ type TaskStore interface {
 	MarkTaskCommentsRead(taskID, userID string, readAt time.Time) error
 	ListUnreadCommentCounts(taskIDs []string, userID string) (map[string]int, error)
 	Update(task model.Task) (model.Task, error)
+	UpdateIfVersion(task model.Task, expectedVersion int64) (model.Task, error)
 	Delete(id string) error
 	Ping(ctx context.Context) error
 }
@@ -58,6 +58,9 @@ func NewInMemoryTaskRepository() *InMemoryTaskRepository {
 func (r *InMemoryTaskRepository) Create(task model.Task) (model.Task, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if task.Version <= 0 {
+		task.Version = 1
+	}
 	r.tasks[task.ID] = task
 	return task, nil
 }
@@ -133,9 +136,26 @@ func (r *InMemoryTaskRepository) listInternal(ownerID, teamID, projectID string,
 func (r *InMemoryTaskRepository) Update(task model.Task) (model.Task, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.tasks[task.ID]; !ok {
+	existing, ok := r.tasks[task.ID]
+	if !ok {
 		return model.Task{}, ErrNotFound
 	}
+	task.Version = existing.Version + 1
+	r.tasks[task.ID] = task
+	return task, nil
+}
+
+func (r *InMemoryTaskRepository) UpdateIfVersion(task model.Task, expectedVersion int64) (model.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.tasks[task.ID]
+	if !ok {
+		return model.Task{}, ErrNotFound
+	}
+	if existing.Version != expectedVersion {
+		return model.Task{}, ErrVersionConflict
+	}
+	task.Version = existing.Version + 1
 	r.tasks[task.ID] = task
 	return task, nil
 }
@@ -143,6 +163,9 @@ func (r *InMemoryTaskRepository) Update(task model.Task) (model.Task, error) {
 func (r *InMemoryTaskRepository) CreateColumn(column model.TaskColumn) (model.TaskColumn, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if column.Version <= 0 {
+		column.Version = 1
+	}
 	r.columns[column.ID] = column
 	return column, nil
 }
@@ -189,6 +212,33 @@ func (r *InMemoryTaskRepository) GetMaxColumnPosition(projectID string) (int, er
 	return max, nil
 }
 
+func (r *InMemoryTaskRepository) UpdateColumn(column model.TaskColumn) (model.TaskColumn, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.columns[column.ID]
+	if !ok {
+		return model.TaskColumn{}, ErrNotFound
+	}
+	column.Version = existing.Version + 1
+	r.columns[column.ID] = column
+	return column, nil
+}
+
+func (r *InMemoryTaskRepository) UpdateColumnIfVersion(column model.TaskColumn, expectedVersion int64) (model.TaskColumn, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.columns[column.ID]
+	if !ok {
+		return model.TaskColumn{}, ErrNotFound
+	}
+	if existing.Version != expectedVersion {
+		return model.TaskColumn{}, ErrVersionConflict
+	}
+	column.Version = existing.Version + 1
+	r.columns[column.ID] = column
+	return column, nil
+}
+
 func (r *InMemoryTaskRepository) UpdateColumnPosition(id string, position int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -198,6 +248,7 @@ func (r *InMemoryTaskRepository) UpdateColumnPosition(id string, position int) e
 	}
 	item.Position = position
 	item.UpdatedAt = time.Now().UTC()
+	item.Version++
 	r.columns[id] = item
 	return nil
 }

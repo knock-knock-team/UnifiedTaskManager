@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 	status TEXT NOT NULL,
 	priority TEXT NOT NULL,
 	due_at TIMESTAMPTZ NULL,
+	completed_at TIMESTAMPTZ NULL,
+	completed_by TEXT NOT NULL DEFAULT '',
 	created_by TEXT NOT NULL,
 	assignee_user_id TEXT NOT NULL DEFAULT '',
 	assignee_name TEXT NOT NULL DEFAULT '',
@@ -41,9 +43,11 @@ CREATE TABLE IF NOT EXISTS tasks (
 	project_id TEXT NOT NULL DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL,
 	updated_at TIMESTAMPTZ NOT NULL,
+	version BIGINT NOT NULL DEFAULT 1,
 	deleted_at TIMESTAMPTZ NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_deleted_at ON tasks(deleted_at);
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS idx_tasks_created_by ON tasks(created_by);
 CREATE INDEX IF NOT EXISTS idx_tasks_team_id ON tasks(team_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
@@ -52,6 +56,14 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS team_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assignee_user_id TEXT NOT NULL DEFAULT '';
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assignee_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NULL;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_by TEXT NOT NULL DEFAULT '';
+
+UPDATE tasks
+SET completed_at = COALESCE(completed_at, updated_at, created_at, NOW())
+WHERE deleted_at IS NULL
+	AND status = 'done'
+	AND completed_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS task_columns (
 	id TEXT PRIMARY KEY,
@@ -61,9 +73,11 @@ CREATE TABLE IF NOT EXISTS task_columns (
 	position INTEGER NOT NULL DEFAULT 0,
 	created_at TIMESTAMPTZ NOT NULL,
 	updated_at TIMESTAMPTZ NOT NULL,
+	version BIGINT NOT NULL DEFAULT 1,
 	deleted_at TIMESTAMPTZ NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_columns_project_id ON task_columns(project_id);
+ALTER TABLE task_columns ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS idx_task_columns_team_id ON task_columns(team_id);
 ALTER TABLE task_columns ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0;
 
@@ -90,9 +104,13 @@ CREATE TABLE IF NOT EXISTS task_comment_reads (
 
 func (r *PostgresTaskRepository) Create(task model.Task) (model.Task, error) {
 	const q = `
-INSERT INTO tasks (id, title, description, status, priority, due_at, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, deleted_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULL)`
+INSERT INTO tasks (id, title, description, status, priority, due_at, completed_at, completed_by, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, version, deleted_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NULL)`
 
+	version := task.Version
+	if version <= 0 {
+		version = 1
+	}
 	_, err := r.db.Exec(context.Background(), q,
 		task.ID,
 		task.Title,
@@ -100,6 +118,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULL)`
 		string(task.Status),
 		string(task.Priority),
 		task.DueAt,
+		task.CompletedAt,
+		task.CompletedBy,
 		task.CreatedBy,
 		task.AssigneeUserID,
 		task.AssigneeName,
@@ -107,6 +127,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULL)`
 		task.ProjectID,
 		task.CreatedAt,
 		task.UpdatedAt,
+		version,
 	)
 	if err != nil {
 		return model.Task{}, err
@@ -116,7 +137,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULL)`
 
 func (r *PostgresTaskRepository) GetByID(id string) (model.Task, error) {
 	const q = `
-SELECT id, title, description, status, priority, due_at, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, deleted_at
+SELECT id, title, description, status, priority, due_at, completed_at, completed_by, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, version, deleted_at
 FROM tasks
 WHERE id = $1 AND deleted_at IS NULL`
 
@@ -162,7 +183,7 @@ WHERE deleted_at IS NULL
 	AND (LOWER(title) LIKE $4 OR LOWER(description) LIKE $4)`
 
 	const listQ = `
-SELECT id, title, description, status, priority, due_at, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, deleted_at
+SELECT id, title, description, status, priority, due_at, completed_at, completed_by, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, version, deleted_at
 FROM tasks
 WHERE deleted_at IS NULL
   AND ($1 = '' OR created_by = $1)
@@ -206,36 +227,94 @@ SET title = $2,
 	status = $4,
 	priority = $5,
 	due_at = $6,
-	assignee_user_id = $7,
-	assignee_name = $8,
-	updated_at = $9
-WHERE id = $1 AND deleted_at IS NULL`
+	completed_at = $7,
+	completed_by = $8,
+	assignee_user_id = $9,
+	assignee_name = $10,
+	updated_at = $11,
+	version = version + 1
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING version`
 
-	res, err := r.db.Exec(context.Background(), q,
+	var nextVersion int64
+	err := r.db.QueryRow(context.Background(), q,
 		task.ID,
 		task.Title,
 		task.Description,
 		string(task.Status),
 		string(task.Priority),
 		task.DueAt,
+		task.CompletedAt,
+		task.CompletedBy,
 		task.AssigneeUserID,
 		task.AssigneeName,
 		task.UpdatedAt,
-	)
+	).Scan(&nextVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Task{}, ErrNotFound
+	}
 	if err != nil {
 		return model.Task{}, err
 	}
-	if res.RowsAffected() == 0 {
-		return model.Task{}, ErrNotFound
+	task.Version = nextVersion
+	return task, nil
+}
+
+func (r *PostgresTaskRepository) UpdateIfVersion(task model.Task, expectedVersion int64) (model.Task, error) {
+	const q = `
+UPDATE tasks
+SET title = $2,
+	description = $3,
+	status = $4,
+	priority = $5,
+	due_at = $6,
+	completed_at = $7,
+	completed_by = $8,
+	assignee_user_id = $9,
+	assignee_name = $10,
+	updated_at = $11,
+	version = version + 1
+WHERE id = $1 AND deleted_at IS NULL AND version = $12
+RETURNING version`
+
+	var nextVersion int64
+	err := r.db.QueryRow(context.Background(), q,
+		task.ID,
+		task.Title,
+		task.Description,
+		string(task.Status),
+		string(task.Priority),
+		task.DueAt,
+		task.CompletedAt,
+		task.CompletedBy,
+		task.AssigneeUserID,
+		task.AssigneeName,
+		task.UpdatedAt,
+		expectedVersion,
+	).Scan(&nextVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, getErr := r.GetByID(task.ID)
+		if getErr != nil {
+			return model.Task{}, ErrNotFound
+		}
+		return model.Task{}, ErrVersionConflict
 	}
+	if err != nil {
+		return model.Task{}, err
+	}
+	task.Version = nextVersion
 	return task, nil
 }
 
 func (r *PostgresTaskRepository) CreateColumn(column model.TaskColumn) (model.TaskColumn, error) {
 	const q = `
-INSERT INTO task_columns (id, team_id, project_id, title, position, created_at, updated_at, deleted_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)`
+INSERT INTO task_columns (id, team_id, project_id, title, position, created_at, updated_at, version, deleted_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL)`
 
+	version := column.Version
+	if version <= 0 {
+		version = 1
+	}
 	_, err := r.db.Exec(context.Background(), q,
 		column.ID,
 		column.TeamID,
@@ -244,6 +323,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)`
 		column.Position,
 		column.CreatedAt,
 		column.UpdatedAt,
+		version,
 	)
 	if err != nil {
 		return model.TaskColumn{}, err
@@ -253,7 +333,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)`
 
 func (r *PostgresTaskRepository) GetColumnByID(id string) (model.TaskColumn, error) {
 	const q = `
-SELECT id, team_id, project_id, title, position, created_at, updated_at
+SELECT id, team_id, project_id, title, position, created_at, updated_at, version
 FROM task_columns
 WHERE id = $1 AND deleted_at IS NULL`
 
@@ -266,6 +346,7 @@ WHERE id = $1 AND deleted_at IS NULL`
 		&column.Position,
 		&column.CreatedAt,
 		&column.UpdatedAt,
+		&column.Version,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.TaskColumn{}, ErrNotFound
@@ -278,7 +359,7 @@ WHERE id = $1 AND deleted_at IS NULL`
 
 func (r *PostgresTaskRepository) ListColumnsByProject(projectID string) ([]model.TaskColumn, error) {
 	const q = `
-SELECT id, team_id, project_id, title, position, created_at, updated_at
+SELECT id, team_id, project_id, title, position, created_at, updated_at, version
 FROM task_columns
 WHERE project_id = $1 AND deleted_at IS NULL
 ORDER BY position ASC, created_at ASC`
@@ -300,6 +381,7 @@ ORDER BY position ASC, created_at ASC`
 			&column.Position,
 			&column.CreatedAt,
 			&column.UpdatedAt,
+			&column.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -324,10 +406,59 @@ WHERE project_id = $1 AND deleted_at IS NULL`
 	return max, nil
 }
 
+func (r *PostgresTaskRepository) UpdateColumn(column model.TaskColumn) (model.TaskColumn, error) {
+	const q = `
+UPDATE task_columns
+SET title = $2, updated_at = $3, version = version + 1
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING version`
+	err := r.db.QueryRow(
+		context.Background(),
+		q,
+		strings.TrimSpace(column.ID),
+		column.Title,
+		column.UpdatedAt,
+	).Scan(&column.Version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.TaskColumn{}, ErrNotFound
+	}
+	if err != nil {
+		return model.TaskColumn{}, err
+	}
+	return column, nil
+}
+
+func (r *PostgresTaskRepository) UpdateColumnIfVersion(column model.TaskColumn, expectedVersion int64) (model.TaskColumn, error) {
+	const q = `
+UPDATE task_columns
+SET title = $2, updated_at = $3, version = version + 1
+WHERE id = $1 AND deleted_at IS NULL AND version = $4
+RETURNING version`
+	err := r.db.QueryRow(
+		context.Background(),
+		q,
+		strings.TrimSpace(column.ID),
+		column.Title,
+		column.UpdatedAt,
+		expectedVersion,
+	).Scan(&column.Version)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, getErr := r.GetColumnByID(column.ID)
+		if getErr != nil {
+			return model.TaskColumn{}, ErrNotFound
+		}
+		return model.TaskColumn{}, ErrVersionConflict
+	}
+	if err != nil {
+		return model.TaskColumn{}, err
+	}
+	return column, nil
+}
+
 func (r *PostgresTaskRepository) UpdateColumnPosition(id string, position int) error {
 	const q = `
 UPDATE task_columns
-SET position = $2, updated_at = $3
+SET position = $2, updated_at = $3, version = version + 1
 WHERE id = $1 AND deleted_at IS NULL`
 	res, err := r.db.Exec(context.Background(), q, strings.TrimSpace(id), position, time.Now().UTC())
 	if err != nil {
@@ -535,6 +666,7 @@ func scanTask(row scanner) (model.Task, error) {
 	var task model.Task
 	var status string
 	var priority string
+	var completedBy string
 	var deletedAt *time.Time
 
 	err := row.Scan(
@@ -544,6 +676,8 @@ func scanTask(row scanner) (model.Task, error) {
 		&status,
 		&priority,
 		&task.DueAt,
+		&task.CompletedAt,
+		&completedBy,
 		&task.CreatedBy,
 		&task.AssigneeUserID,
 		&task.AssigneeName,
@@ -551,6 +685,7 @@ func scanTask(row scanner) (model.Task, error) {
 		&task.ProjectID,
 		&task.CreatedAt,
 		&task.UpdatedAt,
+		&task.Version,
 		&deletedAt,
 	)
 	if err != nil {
@@ -558,5 +693,6 @@ func scanTask(row scanner) (model.Task, error) {
 	}
 	task.Status = model.TaskStatus(status)
 	task.Priority = model.TaskPriority(priority)
+	task.CompletedBy = strings.TrimSpace(completedBy)
 	return task, nil
 }
