@@ -1,5 +1,5 @@
-from .task_assistant_service.agent import AgentService
+from .task_assistant_service.agent import TaskAssistantService
 
 __all__ = [
-    "AgentService"
+    "TaskAssistantService"
 ]

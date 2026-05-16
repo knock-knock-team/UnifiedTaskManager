@@ -1,8 +1,6 @@
 import os
 import string
 
-from agent import logger
-
 from libs.log_py import LoggerFactory
 
 

@@ -10,16 +10,20 @@ from ...schemas import (
     TaskNameDescriptionGenerationRequest,
     TaskNameDescriptionGenerationResponse
 )
-from ...utils import safe_parse_json
 
 from libs.log_py import LoggerFactory
+from libs.json_py import safe_parse_json
+
 
 logger = LoggerFactory.get_logger("TaskAssistantService", level=os.getenv("LOGGER_LEVEL"))
 
 
-class AgentService:
+class TaskAssistantService:
     def __init__(self):
-        self.params = DEFAULT_GIGACHAT_PARAMS
+        self.params = {
+            "credentials": os.getenv("SBER_AUTH"),
+            **DEFAULT_GIGACHAT_PARAMS
+        }
         self.runnable = create_gigachat(**self.params)
     
     async def process(

@@ -2,24 +2,24 @@ import datetime
 from functools import lru_cache
 from typing import Dict, Any
 
-from fastapi import Depends, APIRouter
+from fastapi import Depends, APIRouter, Request
 
 from ..schemas import (
     TaskNameDescriptionGenerationRequest,
     TaskNameDescriptionGenerationResponse
 )
-from ..services import AgentService
+from ..services import TaskAssistantService
 
 
-router = APIRouter(tags=["tasks"])
+task_router = APIRouter(tags=["tasks"])
 
 
 @lru_cache(maxsize=1)
-def get_task_assistant_agent():
-    return AgentService()
+def get_task_assistant_agent(request: Request):
+    return request.app.state.task_assistant_service
 
 
-@router.get("/health", response_model=Dict[str, Any])
+@task_router.get("/health", response_model=Dict[str, Any])
 async def health():
     return {
         "status": "ok",
@@ -28,9 +28,9 @@ async def health():
     }
 
 
-@router.get("/task_name_description", response_model=TaskNameDescriptionGenerationResponse)
+@task_router.get("/task_name_description", response_model=TaskNameDescriptionGenerationResponse)
 async def generate_task_name_description(
     request: TaskNameDescriptionGenerationRequest,
-    agent: AgentService = Depends(get_task_assistant_agent)
+    agent: TaskAssistantService = Depends(get_task_assistant_agent)
 ):
     return agent.process(request)
