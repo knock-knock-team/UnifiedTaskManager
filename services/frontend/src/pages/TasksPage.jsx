@@ -1,6 +1,18 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { request, storage } from '../lib/api';
+import { request, requestWithMeta, storage } from '../lib/api';
+import { etagFromVersion } from '../lib/boardMerge';
+import { rememberColumn, rememberColumns, rememberTasks, updateTaskVersion } from '../lib/taskVersions';
+import {
+  applyBoardEventToColumns,
+  applyBoardEventToTasks,
+  applyBoardSnapshot,
+  patchTask,
+  reorderColumns
+} from '../lib/tasksBoardApi';
+import { useBoardSync } from '../hooks/useBoardSync';
+import { BoardPresence } from '../components/BoardPresence';
+import { TaskConflictDialog } from '../components/TaskConflictDialog';
 import { formatDateTimeLocal, parseDateTimeLocal } from '../lib/date';
 import {
   BASIC_PROJECT_PERMISSION_KEYS,
@@ -98,6 +110,11 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [selectedMemberStatsUserId, setSelectedMemberStatsUserId] = useState('');
   const [openTaskMenuTaskId, setOpenTaskMenuTaskId] = useState('');
   const [taskBoardView, setTaskBoardView] = useState(() => localStorage.getItem('taskBoardView') || 'board');
+  const [presenceUsers, setPresenceUsers] = useState([]);
+  const [boardConnected, setBoardConnected] = useState(false);
+  const [taskConflict, setTaskConflict] = useState(null);
+  const editorBaseTaskRef = useRef(null);
+  const editorDirtyRef = useRef(false);
   const [calendarCursor, setCalendarCursor] = useState(() => new Date());
 
   const formatNotificationError = useCallback((error, fallbackMessage) => {
@@ -623,7 +640,9 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         { auth: true, headers: { 'X-Team-Id': teamId } },
         onUpdateAccessToken
       );
-      setTasks(Array.isArray(data.items) ? data.items : []);
+      const items = Array.isArray(data.items) ? data.items : [];
+      setTasks(items);
+      rememberTasks(items);
     } catch (error) {
       showNotification(error.message || 'Не удалось загрузить задачи', 'error');
     } finally {
@@ -641,12 +660,90 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         { auth: true, headers: { 'X-Team-Id': teamId } },
         onUpdateAccessToken
       );
-      setColumns(Array.isArray(data.items) ? data.items : []);
+      const items = Array.isArray(data.items) ? data.items : [];
+      setColumns(items);
+      rememberColumns(items);
     } catch (error) {
       showNotification(error.message || 'Не удалось загрузить колонки', 'error');
       setColumns([]);
     }
   }, [accessToken, onUpdateAccessToken, showNotification, taskApiBase]);
+
+  const resyncBoard = useCallback(() => {
+    if (!selectedTeamId || !selectedProjectId) return;
+    void loadColumns(selectedTeamId, selectedProjectId);
+    void loadTasks(selectedTeamId, selectedProjectId);
+  }, [loadColumns, loadTasks, selectedProjectId, selectedTeamId]);
+
+  const handleBoardEvent = useCallback((event) => {
+    if (!event?.type) return;
+    if (event.type === 'presence') {
+      setPresenceUsers(Array.isArray(event.users) ? event.users : []);
+      return;
+    }
+    if (event.type === 'board.snapshot') {
+      applyBoardSnapshot(setTasks, setColumns, setPresenceUsers, event);
+      return;
+    }
+    applyBoardEventToTasks(setTasks, event, {
+      currentUserId: profile?.id || '',
+      onRemoteTaskUpdate: (remoteTask) => {
+        if (editorTask?.id !== remoteTask.id) {
+          return;
+        }
+        if (editorDirtyRef.current) {
+          showNotification('Коллега изменил открытую задачу. Сохраните или закройте карточку, чтобы увидеть актуальную версию.', 'error');
+          return;
+        }
+        setEditorTask(remoteTask);
+        editorBaseTaskRef.current = remoteTask;
+        setEditorTaskForm({
+          title: remoteTask.title || '',
+          description: remoteTask.description || '',
+          priority: remoteTask.priority || 'medium',
+          dueAt: formatDateTimeLocal(remoteTask.dueAt),
+          columnId: String(remoteTask.status || '').trim(),
+          assigneeUserId: remoteTask.assigneeUserId || ''
+        });
+      }
+    });
+    applyBoardEventToColumns(setColumns, event, profile?.id || '');
+  }, [editorTask?.id, profile?.id, showNotification]);
+
+  useBoardSync({
+    apiBase: taskApiBase,
+    accessToken,
+    teamId: selectedTeamId,
+    projectId: selectedProjectId,
+    displayName: (profile?.name || profile?.email || '').trim(),
+    enabled: Boolean(accessToken && selectedTeamId && selectedProjectId),
+    onEvent: handleBoardEvent,
+    onResync: resyncBoard,
+    onConnectionChange: setBoardConnected
+  });
+
+  const applyTaskPatch = useCallback(async (taskId, baseTask, patch) => {
+    if (!selectedTeamId) return null;
+    const result = await patchTask({
+      taskApiBase,
+      accessToken,
+      teamId: selectedTeamId,
+      taskId,
+      baseTask,
+      patch,
+      onTokenRefresh: onUpdateAccessToken,
+      onConflict: (details) => setTaskConflict({ ...details, taskId })
+    });
+    if (result.conflict) {
+      return null;
+    }
+    setTasks((prev) => prev.map((item) => (item.id === result.task.id ? { ...item, ...result.task } : item)));
+    if (editorTask?.id === result.task.id) {
+      setEditorTask(result.task);
+      editorBaseTaskRef.current = result.task;
+    }
+    return result.task;
+  }, [accessToken, editorTask?.id, onUpdateAccessToken, selectedTeamId, taskApiBase]);
 
   const loadTaskComments = useCallback(async (taskId) => {
     if (!accessToken || !taskId || !selectedTeamId || !selectedProjectId) return;
@@ -1057,14 +1154,19 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
 
     try {
-      await request(taskApiBase, accessToken, `/v1/task-columns?projectId=${encodeURIComponent(selectedProjectId)}`, {
+      const created = await request(taskApiBase, accessToken, `/v1/task-columns?projectId=${encodeURIComponent(selectedProjectId)}`, {
         method: 'POST',
         auth: true,
         headers: { 'X-Team-Id': selectedTeamId },
         body: { title }
       }, onUpdateAccessToken);
       setColumnTitle('');
-      await loadColumns(selectedTeamId, selectedProjectId);
+      if (created?.id) {
+        rememberColumn(created);
+        setColumns((prev) => [...prev, created].sort((a, b) => a.position - b.position));
+      } else {
+        await loadColumns(selectedTeamId, selectedProjectId);
+      }
     } catch (error) {
       showNotification(error.message || 'Не удалось создать колонку', 'error');
     }
@@ -1211,6 +1313,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   };
 
   const handleEditTask = (task) => {
+    editorDirtyRef.current = false;
+    editorBaseTaskRef.current = task;
     setEditorTask(task);
     setEditorTaskForm({
       title: task.title || '',
@@ -1250,15 +1354,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       return;
     }
     try {
-      await request(taskApiBase, accessToken, `/v1/tasks/${taskId}`, {
-        method: 'PATCH',
-        auth: true,
-        headers: { 'X-Team-Id': selectedTeamId },
-        body: { title: newTitle }
-      }, onUpdateAccessToken);
+      const updated = await applyTaskPatch(taskId, task, { title: newTitle });
+      if (!updated) {
+        return;
+      }
       showNotification('Задача обновлена', 'success');
       handleInlineEditCancel();
-      await loadTasks(selectedTeamId, selectedProjectId);
     } catch (error) {
       showNotification(error.message || 'Не удалось обновить задачу', 'error');
       handleInlineEditCancel();
@@ -1312,6 +1413,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   };
 
   const handleEditorTaskChange = (field, value) => {
+    editorDirtyRef.current = true;
     setEditorTaskForm((prev) => ({ ...prev, [field]: value }));
   };
 
@@ -1337,17 +1439,16 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     const dueAt = parseDateTimeLocal(editorTaskForm.dueAt);
     if (dueAt) payload.dueAt = dueAt;
     try {
-      await request(taskApiBase, accessToken, `/v1/tasks/${editorTask.id}`, {
-        method: 'PATCH',
-        auth: true,
-        headers: { 'X-Team-Id': selectedTeamId },
-        body: payload
-      }, onUpdateAccessToken);
+      const baseTask = editorBaseTaskRef.current || editorTask;
+      const updated = await applyTaskPatch(editorTask.id, baseTask, payload);
+      if (!updated) {
+        return;
+      }
+      editorBaseTaskRef.current = updated;
+      editorDirtyRef.current = false;
       showNotification('Задача обновлена', 'success');
       setEditorTaskSuggestion(null);
-      if (editorTask) {
-        await loadTaskComments(editorTask.id);
-      }
+      await loadTaskComments(editorTask.id);
     } catch (error) {
       showNotification(error.message || 'Не удалось обновить задачу', 'error');
     }
@@ -1422,17 +1523,11 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (!taskId || !selectedTeamId || !selectedProjectId) return;
     const nextCompleted = !isTaskDone(task);
     try {
-      const updated = await request(taskApiBase, accessToken, `/v1/tasks/${taskId}`, {
-        method: 'PATCH',
-        auth: true,
-        headers: { 'X-Team-Id': selectedTeamId },
-        body: { completed: nextCompleted }
-      }, onUpdateAccessToken);
-      if (editorTask?.id === taskId) {
-        setEditorTask(updated);
+      const updated = await applyTaskPatch(taskId, task, { completed: nextCompleted });
+      if (!updated) {
+        return;
       }
       showNotification(nextCompleted ? 'Задача отмечена выполненной' : 'Отметка выполнения снята', 'success');
-      await loadTasks(selectedTeamId, selectedProjectId);
     } catch (error) {
       showNotification(error.message || 'Не удалось обновить состояние задачи', 'error');
     }
@@ -1513,42 +1608,88 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
 
   const handleMoveTask = async (task, targetColumnId) => {
     if (!selectedTeamId || !selectedProjectId || !targetColumnId) return;
+    if (String(task.status || '').trim() === String(targetColumnId).trim()) return;
     try {
-      await request(taskApiBase, accessToken, `/v1/tasks/${task.id}`, {
-        method: 'PATCH',
-        auth: true,
-        headers: { 'X-Team-Id': selectedTeamId },
-        body: { status: targetColumnId }
-      }, onUpdateAccessToken);
-      await loadTasks(selectedTeamId, selectedProjectId);
+      const updated = await applyTaskPatch(task.id, task, { status: targetColumnId });
+      if (!updated) {
+        await loadTasks(selectedTeamId, selectedProjectId);
+      }
     } catch (error) {
       showNotification(error.message || 'Не удалось переместить задачу', 'error');
+      await loadTasks(selectedTeamId, selectedProjectId);
+    }
+  };
+
+  const handleConflictKeepServer = (serverTask) => {
+    if (!serverTask?.id) {
+      setTaskConflict(null);
+      return;
+    }
+    updateTaskVersion(serverTask);
+    setTasks((prev) => prev.map((item) => (item.id === serverTask.id ? { ...item, ...serverTask } : item)));
+    if (editorTask?.id === serverTask.id) {
+      setEditorTask(serverTask);
+      editorBaseTaskRef.current = serverTask;
+    }
+    setTaskConflict(null);
+    showNotification('Подставлена версия с сервера', 'success');
+  };
+
+  const handleConflictForceLocal = async (patch, serverTask) => {
+    if (!taskConflict?.taskId || !selectedTeamId || !serverTask) {
+      setTaskConflict(null);
+      return;
+    }
+    try {
+      const { data } = await requestWithMeta(
+        taskApiBase,
+        accessToken,
+        `/v1/tasks/${encodeURIComponent(taskConflict.taskId)}`,
+        {
+          method: 'PATCH',
+          auth: true,
+          headers: { 'X-Team-Id': selectedTeamId },
+          body: patch,
+          ifMatch: etagFromVersion(serverTask.version)
+        },
+        onUpdateAccessToken
+      );
+      updateTaskVersion(data);
+      setTasks((prev) => prev.map((item) => (item.id === data.id ? { ...item, ...data } : item)));
+      if (editorTask?.id === data.id) {
+        setEditorTask(data);
+        editorBaseTaskRef.current = data;
+      }
+      setTaskConflict(null);
+      showNotification('Ваши изменения сохранены', 'success');
+    } catch (error) {
+      showNotification(error.message || 'Не удалось сохранить задачу', 'error');
     }
   };
 
   const handleReorderColumns = async (nextColumns, options = {}) => {
-    if (!selectedTeamId || !selectedProjectId) return;
+    if (!selectedTeamId || !selectedProjectId) return false;
     const { showSuccess = false } = options;
-    const ids = nextColumns.map((item) => item.id);
     try {
-      const data = await request(
+      const items = await reorderColumns({
         taskApiBase,
         accessToken,
-        `/v1/task-columns?action=reorder&projectId=${encodeURIComponent(selectedProjectId)}`,
-        {
-          method: 'POST',
-          auth: true,
-          headers: { 'X-Team-Id': selectedTeamId },
-          body: { ids }
-        },
-        onUpdateAccessToken
-      );
-      setColumns(Array.isArray(data.items) ? data.items : nextColumns);
+        teamId: selectedTeamId,
+        projectId: selectedProjectId,
+        columns: nextColumns,
+        onTokenRefresh: onUpdateAccessToken
+      });
+      setColumns(items);
       if (showSuccess && shouldShowReorderNotification()) {
         showNotification('Порядок колонок сохранен', 'success');
       }
       return true;
     } catch (error) {
+      if (error?.status === 412 && Array.isArray(error.current)) {
+        setColumns(error.current);
+        showNotification('Колонки обновил другой участник — подставлен актуальный порядок', 'error');
+        return false;
+      }
       showNotification(error.message || 'Не удалось изменить порядок колонок', 'error');
       return false;
     }
@@ -2025,6 +2166,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
               )}
             </div>
             <div className="tasks-pro-header-actions">
+              <BoardPresence users={presenceUsers} currentUserId={profile?.id || ''} connected={boardConnected} />
               <div className="view-segmented" role="tablist" aria-label="Представление задач">
                 {[
                   { id: 'board', label: 'Доска' },
@@ -2694,6 +2836,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
           </div>
         )}
       </article>
+      <TaskConflictDialog
+        conflict={taskConflict}
+        onClose={() => setTaskConflict(null)}
+        onKeepServer={handleConflictKeepServer}
+        onForceLocal={handleConflictForceLocal}
+      />
     </section>
   );
 }

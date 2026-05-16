@@ -121,12 +121,25 @@ async function refreshAccessToken(apiBase, refreshToken) {
   return refreshPromise;
 }
 
-export async function request(apiBase, accessToken, path, options = {}, onTokenRefresh) {
-  const { method = 'GET', body, auth = false, headers: extraHeaders = {} } = options;
+export class VersionConflictError extends Error {
+  constructor(message, current, code = 'VERSION_CONFLICT') {
+    super(message || 'version conflict');
+    this.name = 'VersionConflictError';
+    this.status = 412;
+    this.current = current;
+    this.code = code;
+  }
+}
+
+export async function requestWithMeta(apiBase, accessToken, path, options = {}, onTokenRefresh) {
+  const { method = 'GET', body, auth = false, headers: extraHeaders = {}, ifMatch } = options;
   const headers = { 'Content-Type': 'application/json', ...extraHeaders };
 
   if (auth && accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
+  }
+  if (ifMatch) {
+    headers['If-Match'] = ifMatch;
   }
 
   let response = await fetch(`${apiBase}${path}`, {
@@ -169,9 +182,22 @@ export async function request(apiBase, accessToken, path, options = {}, onTokenR
     data = {};
   }
 
+  if (response.status === 412) {
+    throw new VersionConflictError(data.message, data.current, data.code);
+  }
+
   if (!response.ok) {
     throw new Error(data.message || `HTTP ${response.status}`);
   }
 
-  return data;
+  return {
+    data,
+    etag: response.headers.get('etag') || response.headers.get('ETag') || null,
+    status: response.status
+  };
+}
+
+export async function request(apiBase, accessToken, path, options = {}, onTokenRefresh) {
+  const result = await requestWithMeta(apiBase, accessToken, path, options, onTokenRefresh);
+  return result.data;
 }

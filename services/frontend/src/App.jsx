@@ -204,7 +204,7 @@ function App() {
       <header className="header-shell">
         <div className="header-inner">
           <div className="nav-grid">
-            <div className="logo">VG TASK SYSTEM</div>
+            <div className="logo">UNIFIED TASK MANAGER</div>
             {navItems.map((item) => (
               <NavLink key={item.to} to={item.to} className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}>
                 {item.label}

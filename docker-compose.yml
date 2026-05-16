@@ -5,6 +5,8 @@ services:
     env_file: .env.production
     environment:
       GATEWAY_FILE_SERVICE_URL: http://file-service:8088
+      GATEWAY_ML_SERVICE_URL: http://ml-service:8087
+      GATEWAY_NOTIFICATION_SERVICE_URL: http://notification-service:8089
     depends_on:
       - user-service
       - task-service
@@ -12,6 +14,7 @@ services:
       - sfu-service
       - file-service
       - ml-service
+      - notification-service
     networks:
       - backend
 
@@ -55,6 +58,11 @@ services:
     image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/ml-service:${IMAGE_TAG:-latest}
     pull_policy: always
     env_file: .env.production
+    environment:
+      ML_SERVICE_RABBITMQ_ENABLED: "true"
+      ML_SERVICE_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      TASK_SERVICE_AGENT_COMMANDS_QUEUE: task-service.agent-commands
+      FILE_SERVICE_AGENT_COMMANDS_QUEUE: file-service.agent-commands
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,6 +115,18 @@ services:
       postgres:
         condition: service_healthy
       rabbitmq:
+        condition: service_started
+    networks:
+      - backend
+
+  notification-service:
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/notification-service:${IMAGE_TAG:-latest}
+    pull_policy: always
+    env_file: .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      user-service:
         condition: service_started
     networks:
       - backend

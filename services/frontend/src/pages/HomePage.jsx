@@ -6,7 +6,7 @@ export function HomePage({ isAuthorized }) {
   return (
     <>
       <section className="hero hero-home">
-        <p className="eyebrow">VG TASK SYSTEM</p>
+        <p className="eyebrow">UNIFIED TASK MANAGER</p>
         <h1>Задачи, чаты, файлы и звонки в одном рабочем контуре</h1>
         <p className="hero-note">
           Единая точка входа для команды: канбан-доска с дедлайнами и напоминаниями, переписка по проектам,

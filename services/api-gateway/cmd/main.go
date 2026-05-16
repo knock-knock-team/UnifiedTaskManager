@@ -22,6 +22,7 @@ func main() {
 		cfg.CallServiceURL,
 		cfg.FileServiceURL,
 		cfg.MLServiceURL,
+		cfg.NotificationServiceURL,
 		tokens,
 	)
 	if err != nil {

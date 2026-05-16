@@ -15,6 +15,7 @@ services:
       GATEWAY_CALL_SERVICE_URL: http://sfu-service:8086
       GATEWAY_FILE_SERVICE_URL: http://file-service:8088
       GATEWAY_ML_SERVICE_URL: http://ml-service:8087
+      GATEWAY_NOTIFICATION_SERVICE_URL: http://notification-service:8089
       JWT_SECRET: ${JWT_SECRET}
       CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
     ports:
@@ -26,6 +27,7 @@ services:
       - sfu-service
       - file-service
       - ml-service
+      - notification-service
 
   postgres:
     image: postgres:16-alpine
@@ -112,6 +114,7 @@ services:
       TASK_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       TASK_RABBITMQ_EXCHANGE: task.events
       TASK_USER_SERVICE_URL: http://user-service:8082
+      TASK_BOARD_REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET}
       CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
     expose:
@@ -121,6 +124,42 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+    pull_policy: never
+    container_name: notification-service
+    env_file:
+      - ./.env
+    environment:
+      NOTIFICATION_SERVICE_HTTP_ADDR: :8089
+      NOTIFICATION_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      NOTIFICATION_USER_SERVICE_URL: http://user-service:8082
+      NOTIFICATION_AUTO_MIGRATE: ${AUTO_MIGRATE}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
+      SMTP_HOST: ${SMTP_HOST:-smtp.yandex.ru}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_FROM: ${SMTP_FROM}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Unified Task Manager}
+      NOTIFICATION_DEADLINE_LOOKAHEAD_MINUTES: ${NOTIFICATION_DEADLINE_LOOKAHEAD_MINUTES:-1440}
+      NOTIFICATION_DEFAULT_URGENT_BEFORE_MINUTES: ${NOTIFICATION_DEFAULT_URGENT_BEFORE_MINUTES:-120}
+      NOTIFICATION_SCAN_INTERVAL_SECONDS: ${NOTIFICATION_SCAN_INTERVAL_SECONDS:-300}
+      NOTIFICATION_AUTO_SEND_ENABLED: ${NOTIFICATION_AUTO_SEND_ENABLED:-true}
+      PUBLIC_FRONTEND_URL: ${PUBLIC_FRONTEND_URL:-http://localhost:8080}
+    expose:
+      - "8089"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      user-service:
+        condition: service_started
 
   frontend:
     build:
@@ -222,9 +261,17 @@ services:
       context: .
       dockerfile: services/ml-service/Dockerfile
     container_name: ml-service
+    environment:
+      ML_SERVICE_RABBITMQ_ENABLED: "true"
+      ML_SERVICE_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      TASK_SERVICE_AGENT_COMMANDS_QUEUE: task-service.agent-commands
+      FILE_SERVICE_AGENT_COMMANDS_QUEUE: file-service.agent-commands
     ports:
       - "8087:8087"
     restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   postgres_data:

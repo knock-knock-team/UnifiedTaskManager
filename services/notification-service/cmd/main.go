@@ -701,7 +701,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 func fromEnv() config {
 	return config{
 		HTTPAddr:          getenv("NOTIFICATION_SERVICE_HTTP_ADDR", ":8089"),
-		DatabaseURL:       getenv("NOTIFICATION_DATABASE_URL", getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/vg_task_system?sslmode=disable")),
+		DatabaseURL:       getenv("NOTIFICATION_DATABASE_URL", getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/unified_task_manager?sslmode=disable")),
 		UserServiceURL:    getenv("NOTIFICATION_USER_SERVICE_URL", getenv("USER_SERVICE_URL", "http://localhost:8082")),
 		JWTSecret:         getenv("JWT_SECRET", ""),
 		CORSAllowOrigin:   getenv("CORS_ALLOW_ORIGIN", "*"),
@@ -711,7 +711,7 @@ func fromEnv() config {
 		SMTPUsername:      getenv("SMTP_USERNAME", ""),
 		SMTPPassword:      getenv("SMTP_PASSWORD", ""),
 		SMTPFrom:          getenv("SMTP_FROM", getenv("SMTP_USERNAME", "")),
-		SMTPFromName:      getenv("SMTP_FROM_NAME", "VG Task System"),
+		SMTPFromName:      getenv("SMTP_FROM_NAME", "Unified Task Manager"),
 		DeadlineLookAhead: time.Duration(getenvInt("NOTIFICATION_DEADLINE_LOOKAHEAD_MINUTES", 60*24)) * time.Minute,
 		ScanInterval:      time.Duration(getenvInt("NOTIFICATION_SCAN_INTERVAL_SECONDS", 300)) * time.Second,
 		PermissionTimeout: time.Duration(getenvInt("NOTIFICATION_PERMISSION_TIMEOUT_SECONDS", 3)) * time.Second,

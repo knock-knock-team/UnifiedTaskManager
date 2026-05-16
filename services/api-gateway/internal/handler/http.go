@@ -16,23 +16,25 @@ import (
 )
 
 type HTTPHandler struct {
-	tokens      *service.TokenManager
-	userProxy   *httputil.ReverseProxy
-	taskProxy   *httputil.ReverseProxy
-	chatProxy   *httputil.ReverseProxy
-	callProxy   *httputil.ReverseProxy
-	fileProxy   *httputil.ReverseProxy
-	mlProxy     *httputil.ReverseProxy
-	userURL     *url.URL
-	taskURL     *url.URL
-	chatURL     *url.URL
-	callURL     *url.URL
-	fileURL     *url.URL
-	mlURL       *url.URL
-	allowOrigin string
+	tokens            *service.TokenManager
+	userProxy         *httputil.ReverseProxy
+	taskProxy         *httputil.ReverseProxy
+	chatProxy         *httputil.ReverseProxy
+	callProxy         *httputil.ReverseProxy
+	fileProxy         *httputil.ReverseProxy
+	mlProxy           *httputil.ReverseProxy
+	notificationProxy *httputil.ReverseProxy
+	userURL           *url.URL
+	taskURL           *url.URL
+	chatURL           *url.URL
+	callURL           *url.URL
+	fileURL           *url.URL
+	mlURL             *url.URL
+	notificationURL   *url.URL
+	allowOrigin       string
 }
 
-func NewHTTPHandler(userServiceURL, taskServiceURL, chatServiceURL, callServiceURL, fileServiceURL, mlServiceURL string, tokens *service.TokenManager) (*HTTPHandler, error) {
+func NewHTTPHandler(userServiceURL, taskServiceURL, chatServiceURL, callServiceURL, fileServiceURL, mlServiceURL, notificationServiceURL string, tokens *service.TokenManager) (*HTTPHandler, error) {
 	userURL, err := url.Parse(strings.TrimSpace(userServiceURL))
 	if err != nil {
 		return nil, err
@@ -57,22 +59,28 @@ func NewHTTPHandler(userServiceURL, taskServiceURL, chatServiceURL, callServiceU
 	if err != nil {
 		return nil, err
 	}
+	notificationURL, err := url.Parse(strings.TrimSpace(notificationServiceURL))
+	if err != nil {
+		return nil, err
+	}
 
 	return &HTTPHandler{
-		tokens:      tokens,
-		userProxy:   newProxy(userURL),
-		taskProxy:   newProxy(taskURL),
-		chatProxy:   newProxy(chatURL),
-		callProxy:   newCallProxy(callURL),
-		fileProxy:   newProxy(fileURL),
-		mlProxy:     newProxy(mlURL),
-		userURL:     userURL,
-		taskURL:     taskURL,
-		chatURL:     chatURL,
-		callURL:     callURL,
-		fileURL:     fileURL,
-		mlURL:       mlURL,
-		allowOrigin: "*",
+		tokens:            tokens,
+		userProxy:         newProxy(userURL),
+		taskProxy:         newProxy(taskURL),
+		chatProxy:         newProxy(chatURL),
+		callProxy:         newCallProxy(callURL),
+		fileProxy:         newProxy(fileURL),
+		mlProxy:           newProxy(mlURL),
+		notificationProxy: newProxy(notificationURL),
+		userURL:           userURL,
+		taskURL:           taskURL,
+		chatURL:           chatURL,
+		callURL:           callURL,
+		fileURL:           fileURL,
+		mlURL:             mlURL,
+		notificationURL:   notificationURL,
+		allowOrigin:       "*",
 	}, nil
 }
 
@@ -128,6 +136,10 @@ func (h *HTTPHandler) readyz(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "ml-service not ready"})
 		return
 	}
+	if err := pingUpstream(ctx, h.notificationURL); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "notification-service not ready"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
@@ -138,7 +150,8 @@ func (h *HTTPHandler) withCORS(next http.HandlerFunc) http.HandlerFunc {
 			origin = "*"
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Team-Id, X-Gateway-User-Id, X-Gateway-Role")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Team-Id, X-Gateway-User-Id, X-Gateway-Role, If-Match")
+		w.Header().Set("Access-Control-Expose-Headers", "ETag")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -168,12 +181,20 @@ func (h *HTTPHandler) route(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
 		return
 	}
+	if strings.HasPrefix(path, "/v1/boards/") {
+		if teamID := strings.TrimSpace(r.URL.Query().Get("teamId")); teamID != "" {
+			r.Header.Set("X-Team-Id", teamID)
+		}
+	}
 	h.injectIdentityHeaders(r, claims)
 
 	switch {
 	case isUserRoute(path):
 		log.Printf("User route: %s", path)
 		h.userProxy.ServeHTTP(w, r)
+	case isNotificationRoute(path):
+		log.Printf("Notification route: %s", path)
+		h.notificationProxy.ServeHTTP(w, r)
 	case isTaskRoute(path):
 		log.Printf("Task route: %s", path)
 		h.taskProxy.ServeHTTP(w, r)
@@ -196,15 +217,19 @@ func (h *HTTPHandler) route(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) requireAccessToken(r *http.Request) (*service.Claims, error) {
-	header := strings.TrimSpace(r.Header.Get("Authorization"))
-	if !strings.HasPrefix(strings.ToLower(header), "bearer ") {
-		return nil, errors.New("missing token")
-	}
-	token := strings.TrimSpace(header[len("Bearer "):])
+	token := extractBearerToken(r)
 	if token == "" {
 		return nil, errors.New("missing token")
 	}
 	return h.tokens.Parse(token, "access")
+}
+
+func extractBearerToken(r *http.Request) string {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(strings.ToLower(header), "bearer ") {
+		return strings.TrimSpace(header[len("Bearer "):])
+	}
+	return strings.TrimSpace(r.URL.Query().Get("token"))
 }
 
 func (h *HTTPHandler) injectIdentityHeaders(r *http.Request, claims *service.Claims) {
@@ -217,6 +242,9 @@ func (h *HTTPHandler) injectIdentityHeaders(r *http.Request, claims *service.Cla
 	r.Header.Set("X-User-Role", claims.Role)
 	if claims.TeamID != "" {
 		r.Header.Set("X-Gateway-Team-Id", claims.TeamID)
+	}
+	if teamID := strings.TrimSpace(r.Header.Get("X-Team-Id")); teamID != "" {
+		r.Header.Set("X-Gateway-Team-Id", teamID)
 	}
 	if len(claims.TeamIDs) > 0 {
 		r.Header.Set("X-Gateway-Team-Ids", strings.Join(claims.TeamIDs, ","))
@@ -241,7 +269,9 @@ func isUserRoute(path string) bool {
 }
 
 func isTaskRoute(path string) bool {
-	return strings.HasPrefix(path, "/v1/tasks") || strings.HasPrefix(path, "/v1/task-columns")
+	return strings.HasPrefix(path, "/v1/tasks") ||
+		strings.HasPrefix(path, "/v1/task-columns") ||
+		strings.HasPrefix(path, "/v1/boards")
 }
 
 func isChatRoute(path string) bool {
@@ -258,6 +288,11 @@ func isFileRoute(path string) bool {
 
 func isMlRoute(path string) bool {
 	return strings.HasPrefix(path, "/task_name_description") || strings.HasPrefix(path, "/api/tasks/assistant")
+}
+
+func isNotificationRoute(path string) bool {
+	return (strings.HasPrefix(path, "/v1/tasks/") && strings.HasSuffix(path, "/deadline-notification")) ||
+		(strings.HasPrefix(path, "/v1/projects/") && strings.HasSuffix(path, "/notification-settings"))
 }
 
 func newProxy(target *url.URL) *httputil.ReverseProxy {
