@@ -7,7 +7,7 @@ from ..schemas import (
     TaskNameDescriptionGenerationRequest,
     TaskNameDescriptionGenerationResponse,
 )
-from ..services import TaskAssistantService
+from ..services.task_assistant_service.agent import TaskAssistantService
 
 
 task_router = APIRouter(tags=["tasks"])
