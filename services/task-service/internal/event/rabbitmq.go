@@ -8,7 +8,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"UnifiedTaskManager/services/task-service/internal/model"
+	"unified-task-manager/services/task-service/internal/model"
 )
 
 const (

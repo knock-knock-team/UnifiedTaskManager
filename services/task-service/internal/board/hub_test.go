@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"UnifiedTaskManager/services/task-service/internal/model"
+	"unified-task-manager/services/task-service/internal/model"
 )
 
 const testTimeout = 500 * time.Millisecond

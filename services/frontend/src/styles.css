@@ -1615,6 +1615,14 @@ html[data-theme="light"] .task-card:hover:not(.dragging) {
     0 10px 26px rgba(0, 0, 0, 0.22);
 }
 
+.task-card.overdue:hover:not(.dragging) {
+  border-color: rgba(255, 122, 154, 0.9);
+  box-shadow:
+    inset 3px 0 0 rgba(255, 94, 127, 0.95),
+    0 10px 28px rgba(255, 94, 127, 0.13),
+    0 10px 26px rgba(0, 0, 0, 0.22);
+}
+
 .task-card.dragging {
   opacity: 0.45;
 }
@@ -1637,6 +1645,20 @@ html[data-theme="light"] .task-card:hover:not(.dragging) {
   box-shadow: inset 3px 0 0 rgba(245, 158, 11, 0.9);
 }
 
+.task-card.overdue {
+  border-color: rgba(255, 122, 154, 0.72);
+  background:
+    linear-gradient(90deg, rgba(255, 94, 127, 0.12), rgba(255, 255, 255, 0.02) 42%),
+    var(--chrome-low);
+  box-shadow: inset 3px 0 0 rgba(255, 94, 127, 0.95);
+}
+
+.task-card.completed.overdue {
+  border-color: rgba(89, 216, 155, 0.22);
+  background: rgba(89, 216, 155, 0.04);
+  box-shadow: none;
+}
+
 .task-card-top {
   display: flex;
   justify-content: space-between;
@@ -1651,6 +1673,22 @@ html[data-theme="light"] .task-card:hover:not(.dragging) {
   flex: 0 0 auto;
   flex-shrink: 0;
   min-width: max-content;
+}
+
+.task-overdue-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 122, 154, 0.45);
+  border-radius: 999px;
+  background: rgba(255, 94, 127, 0.13);
+  color: #ffc2d0 !important;
+  font-size: 9px !important;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap !important;
 }
 
 .task-card-title-row {
@@ -1956,6 +1994,11 @@ html[data-theme='light'] .assignee-multi-list::-webkit-scrollbar-thumb:hover {
   color: #8ae7b8;
 }
 
+.task-card-due-overdue {
+  color: #ffc2d0 !important;
+  font-weight: 700;
+}
+
 .task-card-menu-shell {
   position: relative;
   flex-shrink: 0;
@@ -2079,6 +2122,51 @@ html[data-theme="light"] .modal-backdrop {
   color: var(--muted);
   font-size: var(--font-size-sm);
   line-height: var(--lh-body);
+}
+
+.confirm-modal {
+  width: min(460px, 100%);
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: start;
+}
+
+.confirm-modal__icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 126, 153, 0.38);
+  background: rgba(255, 95, 125, 0.12);
+  color: #ffbecb;
+  font-family: var(--font-display);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.confirm-modal__content {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.confirm-modal__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+button.danger {
+  border-color: rgba(255, 126, 153, 0.55);
+  background: linear-gradient(180deg, rgba(255, 126, 153, 0.26), rgba(255, 77, 109, 0.18));
+  color: #ffe5ea;
+}
+
+button.danger:hover:not(:disabled) {
+  border-color: rgba(255, 165, 184, 0.78);
+  background: linear-gradient(180deg, rgba(255, 126, 153, 0.34), rgba(255, 77, 109, 0.24));
 }
 
 .task-modal {
@@ -2237,6 +2325,96 @@ html[data-theme="light"] .modal-backdrop {
 
 .task-comments-panel {
   grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.task-history-panel {
+  grid-column: 1 / -1;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.activity-feed {
+  display: grid;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(126, 168, 255, 0.72) rgba(255, 255, 255, 0.06);
+}
+
+.activity-feed::-webkit-scrollbar {
+  width: 8px;
+}
+
+.activity-feed::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.activity-feed::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(126, 168, 255, 0.9), rgba(110, 231, 183, 0.75)) border-box;
+}
+
+.activity-feed::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(157, 190, 255, 1), rgba(128, 244, 199, 0.92)) border-box;
+}
+
+html[data-theme='light'] .activity-feed {
+  scrollbar-color: rgba(37, 99, 235, 0.58) rgba(148, 163, 184, 0.22);
+}
+
+html[data-theme='light'] .activity-feed::-webkit-scrollbar-track {
+  background: rgba(148, 163, 184, 0.18);
+}
+
+html[data-theme='light'] .activity-feed::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.7), rgba(20, 184, 166, 0.62)) border-box;
+}
+
+.activity-item {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.activity-item__dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #7ea8ff, #6ee7b7);
+  box-shadow: 0 0 0 4px rgba(126, 168, 255, 0.12);
+}
+
+.activity-item__body {
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 9px 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.activity-item__body strong {
+  color: var(--txt);
+  font-size: 12px;
+}
+
+.activity-item__body span,
+.activity-item__body p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.task-history-list {
+  max-height: 260px;
 }
 
 .task-comments-header {
@@ -3015,6 +3193,62 @@ button.task-card-menu-item:hover:not(:disabled) {
 
 .toast-close:hover {
   color: var(--txt);
+}
+
+.user-agreement-banner {
+  position: fixed;
+  left: 20px;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1085;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: min(980px, calc(100vw - 40px));
+  margin: 0 auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(126, 168, 255, 0.12), rgba(89, 216, 155, 0.08)),
+    color-mix(in srgb, var(--chrome-deep) 92%, transparent);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(14px);
+  padding: 14px 16px;
+  animation: fadeScaleIn var(--duration-med) var(--ease-out);
+}
+
+.user-agreement-banner__content {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.user-agreement-banner__content p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.user-agreement-banner__content .section-label {
+  color: var(--txt);
+}
+
+.user-agreement-banner button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .user-agreement-banner {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: calc(100vw - 24px);
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 /* Unsaved changes indicator */

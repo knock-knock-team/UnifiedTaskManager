@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"UnifiedTaskManager/services/task-service/internal/model"
+	"unified-task-manager/services/task-service/internal/model"
 )
 
 type PostgresTaskRepository struct {
@@ -102,6 +102,21 @@ CREATE TABLE IF NOT EXISTS task_comment_reads (
 	last_read_at TIMESTAMPTZ NOT NULL,
 	PRIMARY KEY (task_id, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS task_activity_events (
+	id TEXT PRIMARY KEY,
+	team_id TEXT NOT NULL DEFAULT '',
+	project_id TEXT NOT NULL,
+	actor_user_id TEXT NOT NULL DEFAULT '',
+	entity_type TEXT NOT NULL,
+	entity_id TEXT NOT NULL,
+	event_type TEXT NOT NULL,
+	summary TEXT NOT NULL DEFAULT '',
+	metadata_json TEXT NOT NULL DEFAULT '{}',
+	created_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_activity_project_created ON task_activity_events(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_activity_entity_created ON task_activity_events(project_id, entity_type, entity_id, created_at DESC);
 `
 	_, err := r.db.Exec(ctx, q)
 	return err
@@ -639,6 +654,73 @@ WHERE id = $3 AND project_id = $4 AND status = $5 AND deleted_at IS NULL`
 	return out, nil
 }
 
+func (r *PostgresTaskRepository) CreateActivityEvent(event model.ActivityEvent) (model.ActivityEvent, error) {
+	const q = `
+INSERT INTO task_activity_events (id, team_id, project_id, actor_user_id, entity_type, entity_id, event_type, summary, metadata_json, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+	metadata, err := json.Marshal(event.Metadata)
+	if err != nil || len(metadata) == 0 || string(metadata) == "null" {
+		metadata = []byte("{}")
+	}
+	_, err = r.db.Exec(context.Background(), q,
+		event.ID,
+		event.TeamID,
+		event.ProjectID,
+		event.ActorUserID,
+		event.EntityType,
+		event.EntityID,
+		event.EventType,
+		event.Summary,
+		string(metadata),
+		event.CreatedAt,
+	)
+	if err != nil {
+		return model.ActivityEvent{}, err
+	}
+	return event, nil
+}
+
+func (r *PostgresTaskRepository) ListActivityEvents(projectID, entityType, entityID string, limit, offset int) ([]model.ActivityEvent, int, error) {
+	const totalQ = `
+SELECT COUNT(*)
+FROM task_activity_events
+WHERE project_id = $1
+	AND ($2 = '' OR entity_type = $2)
+	AND ($3 = '' OR entity_id = $3)`
+	const listQ = `
+SELECT id, team_id, project_id, actor_user_id, entity_type, entity_id, event_type, summary, metadata_json, created_at
+FROM task_activity_events
+WHERE project_id = $1
+	AND ($2 = '' OR entity_type = $2)
+	AND ($3 = '' OR entity_id = $3)
+ORDER BY created_at DESC
+LIMIT $4 OFFSET $5`
+	projectID = strings.TrimSpace(projectID)
+	entityType = strings.TrimSpace(entityType)
+	entityID = strings.TrimSpace(entityID)
+	var total int
+	if err := r.db.QueryRow(context.Background(), totalQ, projectID, entityType, entityID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.db.Query(context.Background(), listQ, projectID, entityType, entityID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]model.ActivityEvent, 0, limit)
+	for rows.Next() {
+		item, err := scanActivityEvent(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
 func (r *PostgresTaskRepository) CreateComment(comment model.TaskComment) (model.TaskComment, error) {
 	const q = `
 INSERT INTO task_comments (id, task_id, user_id, author_name, body, created_at)
@@ -860,4 +942,31 @@ func scanTask(row scanner) (model.Task, error) {
 	task.CompletedBy = strings.TrimSpace(completedBy)
 	task.HydrateAssigneesFromLegacy()
 	return task, nil
+}
+
+func scanActivityEvent(row scanner) (model.ActivityEvent, error) {
+	var item model.ActivityEvent
+	var metadataJSON string
+	err := row.Scan(
+		&item.ID,
+		&item.TeamID,
+		&item.ProjectID,
+		&item.ActorUserID,
+		&item.EntityType,
+		&item.EntityID,
+		&item.EventType,
+		&item.Summary,
+		&metadataJSON,
+		&item.CreatedAt,
+	)
+	if err != nil {
+		return model.ActivityEvent{}, err
+	}
+	if strings.TrimSpace(metadataJSON) != "" {
+		_ = json.Unmarshal([]byte(metadataJSON), &item.Metadata)
+	}
+	if item.Metadata == nil {
+		item.Metadata = map[string]any{}
+	}
+	return item, nil
 }

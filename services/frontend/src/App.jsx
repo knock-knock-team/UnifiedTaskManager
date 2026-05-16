@@ -13,6 +13,7 @@ import { ProtectedRoute } from './routes/ProtectedRoute';
 import { AgentChatDrawer } from './ui/AgentChatDrawer';
 import { Toast } from './ui/Toast';
 
+const USER_AGREEMENT_STORAGE_KEY = 'vgUserAgreementAccepted.v1';
 
 function App() {
   const navigate = useNavigate();
@@ -24,6 +25,14 @@ function App() {
   const [profile, setProfile] = useState(null);
   const [isProfileLoading, setIsProfileLoading] = useState(false);
   const [notification, setNotification] = useState(null);
+  const [isUserAgreementVisible, setIsUserAgreementVisible] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return localStorage.getItem(USER_AGREEMENT_STORAGE_KEY) !== 'true';
+    } catch {
+      return true;
+    }
+  });
   const [uiTheme, setUiTheme] = useState(() => {
     if (typeof window === 'undefined') return 'dark';
     try {
@@ -85,6 +94,15 @@ function App() {
 
   const showNotification = useCallback((message, type = 'success') => {
     setNotification({ message, type });
+  }, []);
+
+  const acceptUserAgreement = useCallback(() => {
+    try {
+      localStorage.setItem(USER_AGREEMENT_STORAGE_KEY, 'true');
+    } catch {
+      // ignore storage errors; hide for current session anyway
+    }
+    setIsUserAgreementVisible(false);
   }, []);
 
   function extractTokens(payload) {
@@ -207,9 +225,9 @@ function App() {
       <header className="header-shell">
         <div className="header-inner">
           <nav className="nav-primary" aria-label="Основная навигация">
-            <Link to="/" className="nav-brand" aria-label="Unified Task Manager — на главную">
-              <span className="logo-mark" aria-hidden="true">UG</span>
-              <span className="nav-brand-name">Unified Task Manager</span>
+            <Link to="/" className="nav-brand" aria-label="UnifiedTaskManager — на главную">
+              <span className="logo-mark" aria-hidden="true">UTM</span>
+              <span className="nav-brand-name">UnifiedTaskManager</span>
             </Link>
             <div className="nav-links-cluster">
               {navItems.map((item) => (
@@ -259,6 +277,19 @@ function App() {
         showNotification={showNotification}
         onUpdateAccessToken={onUpdateAccessToken}
       />
+
+      {isUserAgreementVisible && (
+        <section className="user-agreement-banner" aria-label="Пользовательское соглашение">
+          <div className="user-agreement-banner__content">
+            <p className="section-label">ПОЛЬЗОВАТЕЛЬСКОЕ СОГЛАШЕНИЕ</p>
+            <p>
+              Продолжая пользоваться UnifiedTaskManager, вы соглашаетесь с пользовательским соглашением,
+              политикой конфиденциальности и обработкой данных, необходимых для работы сервиса.
+            </p>
+          </div>
+          <button type="button" onClick={acceptUserAgreement}>Понятно, принимаю</button>
+        </section>
+      )}
 
       <Toast notification={notification} onClose={() => setNotification(null)} />
     </div>

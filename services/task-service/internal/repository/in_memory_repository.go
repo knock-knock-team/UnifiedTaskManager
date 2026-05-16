@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"UnifiedTaskManager/services/task-service/internal/model"
+	"unified-task-manager/services/task-service/internal/model"
 )
 
 type TaskStore interface {
@@ -28,6 +28,8 @@ type TaskStore interface {
 	CountByProjectAndStatus(projectID, status string) (int, error)
 	MaxSortPosition(projectID, columnStatus string) (int, error)
 	ReorderTasksInColumn(projectID, columnStatus string, orderedIDs []string) ([]model.Task, error)
+	CreateActivityEvent(event model.ActivityEvent) (model.ActivityEvent, error)
+	ListActivityEvents(projectID, entityType, entityID string, limit, offset int) ([]model.ActivityEvent, int, error)
 	CreateComment(comment model.TaskComment) (model.TaskComment, error)
 	ListCommentsByTaskID(taskID string) ([]model.TaskComment, error)
 	GetCommentByID(commentID string) (model.TaskComment, error)
@@ -44,6 +46,7 @@ type InMemoryTaskRepository struct {
 	mu           sync.RWMutex
 	tasks        map[string]model.Task
 	columns      map[string]model.TaskColumn
+	activities   []model.ActivityEvent
 	comments     map[string][]model.TaskComment
 	commentReads map[string]map[string]time.Time
 }
@@ -52,6 +55,7 @@ func NewInMemoryTaskRepository() *InMemoryTaskRepository {
 	return &InMemoryTaskRepository{
 		tasks:        make(map[string]model.Task),
 		columns:      make(map[string]model.TaskColumn),
+		activities:   make([]model.ActivityEvent, 0),
 		comments:     make(map[string][]model.TaskComment),
 		commentReads: make(map[string]map[string]time.Time),
 	}
@@ -370,6 +374,46 @@ func (r *InMemoryTaskRepository) ReorderTasksInColumn(projectID, columnStatus st
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+func (r *InMemoryTaskRepository) CreateActivityEvent(event model.ActivityEvent) (model.ActivityEvent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.activities = append(r.activities, event)
+	return event, nil
+}
+
+func (r *InMemoryTaskRepository) ListActivityEvents(projectID, entityType, entityID string, limit, offset int) ([]model.ActivityEvent, int, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	projectID = strings.TrimSpace(projectID)
+	entityType = strings.TrimSpace(entityType)
+	entityID = strings.TrimSpace(entityID)
+	items := make([]model.ActivityEvent, 0, len(r.activities))
+	for _, item := range r.activities {
+		if projectID != "" && item.ProjectID != projectID {
+			continue
+		}
+		if entityType != "" && item.EntityType != entityType {
+			continue
+		}
+		if entityID != "" && item.EntityID != entityID {
+			continue
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	total := len(items)
+	if offset >= total {
+		return []model.ActivityEvent{}, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return append([]model.ActivityEvent(nil), items[offset:end]...), total, nil
 }
 
 func (r *InMemoryTaskRepository) CreateComment(comment model.TaskComment) (model.TaskComment, error) {

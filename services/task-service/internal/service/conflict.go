@@ -1,6 +1,6 @@
 package service
 
-import "UnifiedTaskManager/services/task-service/internal/model"
+import "unified-task-manager/services/task-service/internal/model"
 
 type VersionConflictError struct {
 	EntityType string

@@ -6,13 +6,13 @@ import (
 	"log"
 	"time"
 
-	"UnifiedTaskManager/services/task-service/internal/board"
-	"UnifiedTaskManager/services/task-service/internal/config"
-	"UnifiedTaskManager/services/task-service/internal/consumer"
-	"UnifiedTaskManager/services/task-service/internal/event"
-	"UnifiedTaskManager/services/task-service/internal/handler"
-	"UnifiedTaskManager/services/task-service/internal/repository"
-	"UnifiedTaskManager/services/task-service/internal/service"
+	"unified-task-manager/services/task-service/internal/board"
+	"unified-task-manager/services/task-service/internal/config"
+	"unified-task-manager/services/task-service/internal/consumer"
+	"unified-task-manager/services/task-service/internal/event"
+	"unified-task-manager/services/task-service/internal/handler"
+	"unified-task-manager/services/task-service/internal/repository"
+	"unified-task-manager/services/task-service/internal/service"
 )
 
 func main() {

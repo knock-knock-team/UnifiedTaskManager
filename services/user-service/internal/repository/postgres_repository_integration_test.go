@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"UnifiedTaskManager/services/user-service/internal/model"
+	"unified-task-manager/services/user-service/internal/model"
 )
 
 func TestPostgresRepositoryIntegrationCRUD(t *testing.T) {

@@ -1,4 +1,4 @@
-module UnifiedTaskManager/services/api-gateway
+module unified-task-manager/services/api-gateway
 
 go 1.22
 

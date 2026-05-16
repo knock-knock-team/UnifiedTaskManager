@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"UnifiedTaskManager/services/task-service/internal/board"
+	"unified-task-manager/services/task-service/internal/board"
 )
 
 func newBoardUpgrader(allowedOrigins string) websocket.Upgrader {

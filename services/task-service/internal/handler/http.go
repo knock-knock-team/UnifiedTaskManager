@@ -12,10 +12,10 @@ import (
 
 	observability "observability-go"
 
-	"UnifiedTaskManager/services/task-service/internal/board"
-	"UnifiedTaskManager/services/task-service/internal/model"
-	"UnifiedTaskManager/services/task-service/internal/repository"
-	"UnifiedTaskManager/services/task-service/internal/service"
+	"unified-task-manager/services/task-service/internal/board"
+	"unified-task-manager/services/task-service/internal/model"
+	"unified-task-manager/services/task-service/internal/repository"
+	"unified-task-manager/services/task-service/internal/service"
 )
 
 type contextKey string
@@ -55,6 +55,7 @@ func (h *HTTPHandler) Routes() http.Handler {
 	mux.HandleFunc("/readyz", h.readyz)
 	mux.HandleFunc("/v1/task-columns", h.auth(h.taskColumns))
 	mux.HandleFunc("/v1/task-columns/", h.auth(h.taskColumnByID))
+	mux.HandleFunc("/v1/task-activity", h.auth(h.taskActivity))
 	mux.HandleFunc("/v1/tasks", h.auth(h.tasks))
 	mux.HandleFunc("/v1/tasks/", h.auth(h.taskByID))
 	mux.HandleFunc("/v1/boards/stream", h.auth(h.boardStream))
@@ -207,7 +208,7 @@ func (h *HTTPHandler) taskColumns(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		item, err := h.svc.CreateColumn(service.CreateColumnInput{TeamID: teamID, ProjectID: projectID, Title: req.Title})
+		item, err := h.svc.CreateColumn(service.CreateColumnInput{TeamID: teamID, ProjectID: projectID, Title: req.Title, ActorUserID: currentUserID(r.Context())})
 		if err != nil {
 			h.writeServiceError(w, err)
 			return
@@ -277,7 +278,7 @@ func (h *HTTPHandler) taskColumnByID(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		input := service.UpdateColumnInput{Title: req.Title}
+		input := service.UpdateColumnInput{Title: req.Title, ActorUserID: currentUserID(r.Context())}
 		if version, ok := service.ParseIfMatchHeader(r.Header.Get("If-Match")); ok {
 			input.ExpectedVersion = &version
 		}
@@ -298,6 +299,35 @@ func (h *HTTPHandler) taskColumnByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (h *HTTPHandler) taskActivity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	projectID := strings.TrimSpace(r.URL.Query().Get("projectId"))
+	teamID := strings.TrimSpace(currentTeamID(r.Context()))
+	if teamID == "" || projectID == "" {
+		writeError(w, http.StatusBadRequest, "teamId and projectId are required")
+		return
+	}
+	if !h.ensureProjectPermission(w, r, teamID, projectID, "tasks.read") {
+		return
+	}
+	limit := parseInt(r.URL.Query().Get("limit"), 30)
+	offset := parseInt(r.URL.Query().Get("offset"), 0)
+	items, total, err := h.svc.ListActivityByProject(projectID, limit, offset)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  items,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 
 func (h *HTTPHandler) taskByID(w http.ResponseWriter, r *http.Request) {
@@ -321,6 +351,11 @@ func (h *HTTPHandler) taskByID(w http.ResponseWriter, r *http.Request) {
 			}
 			if len(parts) == 3 && r.Method == http.MethodDelete {
 				h.taskCommentByID(w, r, id, strings.TrimSpace(parts[2]))
+				return
+			}
+		case "history":
+			if len(parts) == 2 {
+				h.taskHistory(w, r, id)
 				return
 			}
 		}
@@ -538,6 +573,34 @@ func (h *HTTPHandler) updateTask(w http.ResponseWriter, r *http.Request, id stri
 	}
 	h.audit(r, "task_updated", "project_id", updated.ProjectID, "task_id", updated.ID, "status", updated.Status, "priority", updated.Priority, "completed", updated.CompletedAt != nil)
 	writeTaskJSON(w, http.StatusOK, updated)
+}
+
+func (h *HTTPHandler) taskHistory(w http.ResponseWriter, r *http.Request, taskID string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	task, err := h.svc.GetByID(taskID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	if !h.ensureProjectPermission(w, r, task.TeamID, task.ProjectID, "tasks.read") {
+		return
+	}
+	limit := parseInt(r.URL.Query().Get("limit"), 30)
+	offset := parseInt(r.URL.Query().Get("offset"), 0)
+	items, total, err := h.svc.ListTaskHistory(taskID, limit, offset)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  items,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 
 func (h *HTTPHandler) taskComments(w http.ResponseWriter, r *http.Request, taskID string) {

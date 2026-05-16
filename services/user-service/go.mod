@@ -1,4 +1,4 @@
-module UnifiedTaskManager/services/user-service
+module unified-task-manager/services/user-service
 
 go 1.22
 

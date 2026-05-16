@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 
-	"UnifiedTaskManager/services/user-service/internal/model"
-	"UnifiedTaskManager/services/user-service/internal/repository"
+	"unified-task-manager/services/user-service/internal/model"
+	"unified-task-manager/services/user-service/internal/repository"
 )
 
 type OutboxWorker struct {

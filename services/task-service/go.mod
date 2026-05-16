@@ -1,4 +1,4 @@
-module UnifiedTaskManager/services/task-service
+module unified-task-manager/services/task-service
 
 go 1.22
 

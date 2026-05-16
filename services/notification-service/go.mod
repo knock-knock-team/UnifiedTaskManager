@@ -1,4 +1,4 @@
-module UnifiedTaskManager/services/notification-service
+module unified-task-manager/services/notification-service
 
 go 1.22
 

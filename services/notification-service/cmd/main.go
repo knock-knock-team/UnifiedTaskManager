@@ -715,7 +715,7 @@ func fromEnv() config {
 		SMTPUsername:      getenv("SMTP_USERNAME", ""),
 		SMTPPassword:      getenv("SMTP_PASSWORD", ""),
 		SMTPFrom:          getenv("SMTP_FROM", getenv("SMTP_USERNAME", "")),
-		SMTPFromName:      getenv("SMTP_FROM_NAME", "Unified Task Manager"),
+		SMTPFromName:      getenv("SMTP_FROM_NAME", "UnifiedTaskManager"),
 		DeadlineLookAhead: time.Duration(getenvInt("NOTIFICATION_DEADLINE_LOOKAHEAD_MINUTES", 60*24)) * time.Minute,
 		ScanInterval:      time.Duration(getenvInt("NOTIFICATION_SCAN_INTERVAL_SECONDS", 300)) * time.Second,
 		PermissionTimeout: time.Duration(getenvInt("NOTIFICATION_PERMISSION_TIMEOUT_SECONDS", 3)) * time.Second,

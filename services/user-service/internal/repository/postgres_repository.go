@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"UnifiedTaskManager/services/user-service/internal/model"
+	"unified-task-manager/services/user-service/internal/model"
 )
 
 type PostgresUserRepository struct {

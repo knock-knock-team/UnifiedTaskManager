@@ -28,26 +28,26 @@ const (
 )
 
 type Task struct {
-	ID             string       `json:"id"`
-	Title          string       `json:"title"`
-	Description    string       `json:"description,omitempty"`
-	Status         TaskStatus   `json:"status"`
-	Priority       TaskPriority `json:"priority"`
-	DueAt          *time.Time   `json:"dueAt,omitempty"`
-	CompletedAt    *time.Time   `json:"completedAt,omitempty"`
-	CompletedBy    string       `json:"completedBy,omitempty"`
-	CreatedBy      string       `json:"createdBy"`
+	ID             string         `json:"id"`
+	Title          string         `json:"title"`
+	Description    string         `json:"description,omitempty"`
+	Status         TaskStatus     `json:"status"`
+	Priority       TaskPriority   `json:"priority"`
+	DueAt          *time.Time     `json:"dueAt,omitempty"`
+	CompletedAt    *time.Time     `json:"completedAt,omitempty"`
+	CompletedBy    string         `json:"completedBy,omitempty"`
+	CreatedBy      string         `json:"createdBy"`
 	Assignees      []TaskAssignee `json:"assignees,omitempty"`
 	Tags           []string       `json:"tags,omitempty"`
 	AssigneeUserID string         `json:"assigneeUserId,omitempty"`
 	AssigneeName   string         `json:"assigneeName,omitempty"`
-	TeamID         string       `json:"teamId,omitempty"`
-	ProjectID      string       `json:"projectId,omitempty"`
-	SortPosition   int          `json:"sortPosition"`
-	UnreadComments int          `json:"unreadComments,omitempty"`
-	Version        int64        `json:"version"`
-	CreatedAt      time.Time    `json:"createdAt"`
-	UpdatedAt      time.Time    `json:"updatedAt"`
+	TeamID         string         `json:"teamId,omitempty"`
+	ProjectID      string         `json:"projectId,omitempty"`
+	SortPosition   int            `json:"sortPosition"`
+	UnreadComments int            `json:"unreadComments,omitempty"`
+	Version        int64          `json:"version"`
+	CreatedAt      time.Time      `json:"createdAt"`
+	UpdatedAt      time.Time      `json:"updatedAt"`
 }
 
 // HydrateAssignees fills assignees slice from legacy single-assignee columns when JSON is empty.
@@ -99,4 +99,17 @@ type TaskColumn struct {
 	Version   int64     `json:"version"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type ActivityEvent struct {
+	ID          string         `json:"id"`
+	TeamID      string         `json:"teamId"`
+	ProjectID   string         `json:"projectId"`
+	ActorUserID string         `json:"actorUserId,omitempty"`
+	EntityType  string         `json:"entityType"`
+	EntityID    string         `json:"entityId"`
+	EventType   string         `json:"eventType"`
+	Summary     string         `json:"summary"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	CreatedAt   time.Time      `json:"createdAt"`
 }

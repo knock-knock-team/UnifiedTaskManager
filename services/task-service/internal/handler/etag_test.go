@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"UnifiedTaskManager/services/task-service/internal/model"
-	"UnifiedTaskManager/services/task-service/internal/service"
+	"unified-task-manager/services/task-service/internal/model"
+	"unified-task-manager/services/task-service/internal/service"
 )
 
 func TestWriteTaskJSONSetsETag(t *testing.T) {

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
-  title: Unified Task Manager API
-  version: 0.1.0
+  title: UnifiedTaskManager API
+  version: 1.0.0
   description: |
     Public HTTP API exposed through the API Gateway (`/api` prefix on the edge).
     Nginx strips `/api` before proxying; paths below are relative to that prefix.

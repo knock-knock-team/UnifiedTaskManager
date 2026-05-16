@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"UnifiedTaskManager/services/task-service/internal/event"
-	"UnifiedTaskManager/services/task-service/internal/model"
-	"UnifiedTaskManager/services/task-service/internal/repository"
+	"unified-task-manager/services/task-service/internal/event"
+	"unified-task-manager/services/task-service/internal/model"
+	"unified-task-manager/services/task-service/internal/repository"
 )
 
 var ErrBadRequest = errors.New("bad request")
@@ -31,30 +31,32 @@ type CreateTaskInput struct {
 }
 
 type UpdateTaskInput struct {
-	Title            *string    `json:"title"`
-	Description      *string    `json:"description"`
-	Status           *string    `json:"status"`
-	Priority         *string    `json:"priority"`
-	DueAt            *time.Time `json:"dueAt"`
+	Title            *string               `json:"title"`
+	Description      *string               `json:"description"`
+	Status           *string               `json:"status"`
+	Priority         *string               `json:"priority"`
+	DueAt            *time.Time            `json:"dueAt"`
 	Assignees        *[]model.TaskAssignee `json:"assignees"`
-	Tags             *[]string  `json:"tags"`
-	AssigneeUserID   *string    `json:"assigneeUserId"`
-	AssigneeName     *string    `json:"assigneeName"`
-	Completed        *bool      `json:"completed"`
+	Tags             *[]string             `json:"tags"`
+	AssigneeUserID   *string               `json:"assigneeUserId"`
+	AssigneeName     *string               `json:"assigneeName"`
+	Completed        *bool                 `json:"completed"`
 	ActorUserID      string
 	ExpectedVersion  *int64
 	SkipVersionCheck bool
 }
 
 type CreateColumnInput struct {
-	TeamID    string
-	ProjectID string
-	Title     string
+	TeamID      string
+	ProjectID   string
+	Title       string
+	ActorUserID string
 }
 
 type UpdateColumnInput struct {
-	Title           *string `json:"title"`
-	ExpectedVersion *int64
+	Title            *string `json:"title"`
+	ActorUserID      string
+	ExpectedVersion  *int64
 	SkipVersionCheck bool
 }
 
@@ -105,20 +107,20 @@ func (s *TaskService) Create(input CreateTaskInput) (model.Task, error) {
 
 	now := time.Now().UTC()
 	task := model.Task{
-		ID:             newID(),
-		Title:          title,
-		Description:    strings.TrimSpace(input.Description),
-		Status:         normalizeStatus(input.Status),
-		Priority:       normalizePriority(input.Priority),
-		DueAt:          input.DueAt,
-		CreatedBy:      createdBy,
-		Assignees:      assignees,
-		Tags:           normalizeTaskTags(input.Tags),
-		TeamID:         teamID,
-		ProjectID:      projectID,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		Version:        1,
+		ID:          newID(),
+		Title:       title,
+		Description: strings.TrimSpace(input.Description),
+		Status:      normalizeStatus(input.Status),
+		Priority:    normalizePriority(input.Priority),
+		DueAt:       input.DueAt,
+		CreatedBy:   createdBy,
+		Assignees:   assignees,
+		Tags:        normalizeTaskTags(input.Tags),
+		TeamID:      teamID,
+		ProjectID:   projectID,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Version:     1,
 	}
 	task.SyncPrimaryAssigneeFromAssignees()
 	if task.Status == model.TaskStatusDone {
@@ -140,6 +142,13 @@ func (s *TaskService) Create(input CreateTaskInput) (model.Task, error) {
 	if s.board != nil {
 		s.board.TaskCreated(createdBy, created)
 	}
+	s.recordActivity("task.created", created.TeamID, created.ProjectID, createdBy, "task", created.ID, "Создана задача", map[string]any{
+		"title":          created.Title,
+		"status":         created.Status,
+		"priority":       created.Priority,
+		"assignee_count": len(created.Assignees),
+		"tag_count":      len(created.Tags),
+	})
 	return created, nil
 }
 
@@ -165,6 +174,32 @@ func (s *TaskService) ListByProject(projectID string, limit, offset int, search 
 	return s.repo.ListByProject(projectID, limit, offset, search)
 }
 
+func (s *TaskService) ListActivityByProject(projectID string, limit, offset int) ([]model.ActivityEvent, int, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, 0, ErrBadRequest
+	}
+	return s.listActivity(projectID, "", "", limit, offset)
+}
+
+func (s *TaskService) ListTaskHistory(taskID string, limit, offset int) ([]model.ActivityEvent, int, error) {
+	task, err := s.repo.GetByID(strings.TrimSpace(taskID))
+	if err != nil {
+		return nil, 0, err
+	}
+	return s.listActivity(task.ProjectID, "task", task.ID, limit, offset)
+}
+
+func (s *TaskService) listActivity(projectID, entityType, entityID string, limit, offset int) ([]model.ActivityEvent, int, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return s.repo.ListActivityEvents(projectID, entityType, entityID, limit, offset)
+}
+
 func (s *TaskService) ReorderTasksInColumn(projectID, actorID, columnStatus string, orderedIDs []string) ([]model.Task, error) {
 	projectID = strings.TrimSpace(projectID)
 	columnStatus = strings.TrimSpace(columnStatus)
@@ -182,6 +217,12 @@ func (s *TaskService) ReorderTasksInColumn(projectID, actorID, columnStatus stri
 		tm := strings.TrimSpace(tasks[0].TeamID)
 		s.board.TasksReordered(strings.TrimSpace(actorID), tm, projectID, tasks)
 	}
+	if len(tasks) > 0 {
+		s.recordActivity("tasks.reordered", tasks[0].TeamID, projectID, strings.TrimSpace(actorID), "column", columnStatus, "Изменён порядок задач", map[string]any{
+			"status":     columnStatus,
+			"task_count": len(tasks),
+		})
+	}
 	return tasks, nil
 }
 
@@ -190,6 +231,7 @@ func (s *TaskService) Update(id string, input UpdateTaskInput) (model.Task, erro
 	if err != nil {
 		return model.Task{}, err
 	}
+	before := current
 
 	completionExplicitlyUpdated := false
 
@@ -295,6 +337,7 @@ func (s *TaskService) Update(id string, input UpdateTaskInput) (model.Task, erro
 	if s.board != nil {
 		s.board.TaskUpdated(strings.TrimSpace(input.ActorUserID), updated)
 	}
+	s.recordTaskUpdateActivity(before, updated, strings.TrimSpace(input.ActorUserID))
 	return updated, nil
 }
 
@@ -313,6 +356,10 @@ func (s *TaskService) Delete(id, actorID string) error {
 	if s.board != nil {
 		s.board.TaskDeleted(strings.TrimSpace(actorID), current.TeamID, current.ProjectID, current.ID)
 	}
+	s.recordActivity("task.deleted", current.TeamID, current.ProjectID, strings.TrimSpace(actorID), "task", current.ID, "Удалена задача", map[string]any{
+		"title":  current.Title,
+		"status": current.Status,
+	})
 	return nil
 }
 
@@ -335,7 +382,8 @@ func (s *TaskService) AddComment(input CreateCommentInput) (model.TaskComment, e
 	if authorName == "" {
 		authorName = "Anonymous"
 	}
-	if _, err := s.repo.GetByID(taskID); err != nil {
+	task, err := s.repo.GetByID(taskID)
+	if err != nil {
 		return model.TaskComment{}, err
 	}
 	comment := model.TaskComment{
@@ -354,10 +402,11 @@ func (s *TaskService) AddComment(input CreateCommentInput) (model.TaskComment, e
 		return model.TaskComment{}, err
 	}
 	if s.board != nil {
-		if task, err := s.repo.GetByID(taskID); err == nil {
-			s.board.CommentAdded(userID, task, created)
-		}
+		s.board.CommentAdded(userID, task, created)
 	}
+	s.recordActivity("task.comment.created", task.TeamID, task.ProjectID, userID, "task", task.ID, "Добавлен комментарий", map[string]any{
+		"comment_id": created.ID,
+	})
 	return created, nil
 }
 
@@ -387,7 +436,17 @@ func (s *TaskService) DeleteComment(taskID, commentID, userID string) error {
 	if comment.UserID != userID {
 		return ErrForbidden
 	}
-	return s.repo.DeleteComment(commentID)
+	task, err := s.repo.GetByID(taskID)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.DeleteComment(commentID); err != nil {
+		return err
+	}
+	s.recordActivity("task.comment.deleted", task.TeamID, task.ProjectID, userID, "task", task.ID, "Удалён комментарий", map[string]any{
+		"comment_id": commentID,
+	})
+	return nil
 }
 
 func (s *TaskService) ListUnreadCommentCounts(taskIDs []string, userID string) (map[string]int, error) {
@@ -425,8 +484,11 @@ func (s *TaskService) CreateColumn(input CreateColumnInput) (model.TaskColumn, e
 		return model.TaskColumn{}, err
 	}
 	if s.board != nil {
-		s.board.ColumnCreated("", created)
+		s.board.ColumnCreated(strings.TrimSpace(input.ActorUserID), created)
 	}
+	s.recordActivity("column.created", created.TeamID, created.ProjectID, strings.TrimSpace(input.ActorUserID), "column", created.ID, "Создана колонка", map[string]any{
+		"title": created.Title,
+	})
 	return created, nil
 }
 
@@ -468,6 +530,9 @@ func (s *TaskService) DeleteColumn(id, actorID string) error {
 	if s.board != nil {
 		s.board.ColumnDeleted(strings.TrimSpace(actorID), column.TeamID, column.ProjectID, column.ID)
 	}
+	s.recordActivity("column.deleted", column.TeamID, column.ProjectID, strings.TrimSpace(actorID), "column", column.ID, "Удалена колонка", map[string]any{
+		"title": column.Title,
+	})
 	return nil
 }
 
@@ -508,8 +573,11 @@ func (s *TaskService) UpdateColumn(id string, input UpdateColumnInput) (model.Ta
 		return model.TaskColumn{}, updateErr
 	}
 	if s.board != nil {
-		s.board.ColumnUpdated("", updated)
+		s.board.ColumnUpdated(strings.TrimSpace(input.ActorUserID), updated)
 	}
+	s.recordActivity("column.updated", updated.TeamID, updated.ProjectID, strings.TrimSpace(input.ActorUserID), "column", updated.ID, "Изменена колонка", map[string]any{
+		"title": updated.Title,
+	})
 	return updated, nil
 }
 
@@ -575,7 +643,116 @@ func (s *TaskService) ReorderColumns(projectID, actorID string, orderedIDs []str
 			s.board.ColumnsReordered(strings.TrimSpace(actorID), teamID, projectID, items)
 		}
 	}
+	teamID := ""
+	if len(columns) > 0 {
+		teamID = columns[0].TeamID
+	}
+	s.recordActivity("columns.reordered", teamID, projectID, strings.TrimSpace(actorID), "project", projectID, "Изменён порядок колонок", map[string]any{
+		"column_count": len(finalOrder),
+	})
 	return nil
+}
+
+func (s *TaskService) recordActivity(eventType, teamID, projectID, actorID, entityType, entityID, summary string, metadata map[string]any) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return
+	}
+	event := model.ActivityEvent{
+		ID:          newID(),
+		TeamID:      strings.TrimSpace(teamID),
+		ProjectID:   projectID,
+		ActorUserID: strings.TrimSpace(actorID),
+		EntityType:  strings.TrimSpace(entityType),
+		EntityID:    strings.TrimSpace(entityID),
+		EventType:   strings.TrimSpace(eventType),
+		Summary:     strings.TrimSpace(summary),
+		Metadata:    metadata,
+		CreatedAt:   time.Now().UTC(),
+	}
+	if event.Metadata == nil {
+		event.Metadata = map[string]any{}
+	}
+	_, _ = s.repo.CreateActivityEvent(event)
+}
+
+func (s *TaskService) recordTaskUpdateActivity(before, after model.Task, actorID string) {
+	changes := make(map[string]any)
+	addChange := func(field string, from any, to any) {
+		changes[field] = map[string]any{"from": from, "to": to}
+	}
+	if before.Title != after.Title {
+		addChange("title", before.Title, after.Title)
+	}
+	if before.Description != after.Description {
+		addChange("description", before.Description, after.Description)
+	}
+	if before.Status != after.Status {
+		addChange("status", before.Status, after.Status)
+	}
+	if before.Priority != after.Priority {
+		addChange("priority", before.Priority, after.Priority)
+	}
+	if !timePtrEqual(before.DueAt, after.DueAt) {
+		addChange("dueAt", before.DueAt, after.DueAt)
+	}
+	if !assigneesEqual(before.Assignees, after.Assignees) {
+		addChange("assignees", before.Assignees, after.Assignees)
+	}
+	if !stringSlicesEqual(before.Tags, after.Tags) {
+		addChange("tags", before.Tags, after.Tags)
+	}
+	if !timePtrEqual(before.CompletedAt, after.CompletedAt) {
+		addChange("completed", before.CompletedAt != nil, after.CompletedAt != nil)
+	}
+	if len(changes) == 0 {
+		return
+	}
+	summary := "Изменена задача"
+	if _, ok := changes["status"]; ok {
+		summary = "Изменён статус задачи"
+	}
+	if _, ok := changes["completed"]; ok && after.CompletedAt != nil {
+		summary = "Задача завершена"
+	}
+	if _, ok := changes["completed"]; ok && after.CompletedAt == nil {
+		summary = "Задача снова открыта"
+	}
+	s.recordActivity("task.updated", after.TeamID, after.ProjectID, actorID, "task", after.ID, summary, map[string]any{
+		"title":   after.Title,
+		"changes": changes,
+	})
+}
+
+func timePtrEqual(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
+func assigneesEqual(a, b []model.TaskAssignee) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeStatus(value string) model.TaskStatus {

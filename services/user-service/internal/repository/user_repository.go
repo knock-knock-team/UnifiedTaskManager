@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"UnifiedTaskManager/services/user-service/internal/model"
+	"unified-task-manager/services/user-service/internal/model"
 )
 
 var (

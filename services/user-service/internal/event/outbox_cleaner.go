@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"UnifiedTaskManager/services/user-service/internal/repository"
+	"unified-task-manager/services/user-service/internal/repository"
 )
 
 type OutboxCleaner struct {

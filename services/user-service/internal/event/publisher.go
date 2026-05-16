@@ -3,7 +3,7 @@ package event
 import (
 	"context"
 
-	"UnifiedTaskManager/services/user-service/internal/model"
+	"unified-task-manager/services/user-service/internal/model"
 )
 
 type UserEventPublisher interface {

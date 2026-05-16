@@ -11,10 +11,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
-	"UnifiedTaskManager/services/task-service/internal/model"
+	"unified-task-manager/services/task-service/internal/model"
 )
 
-const redisChannel = "utm:board:events"
+const redisChannel = "vg:board:events"
 
 type redisEnvelope struct {
 	NodeID string `json:"nodeId"`

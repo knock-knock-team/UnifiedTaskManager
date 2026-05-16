@@ -3,9 +3,9 @@ package main
 import (
 	"log"
 
-	"UnifiedTaskManager/services/api-gateway/internal/config"
-	"UnifiedTaskManager/services/api-gateway/internal/handler"
-	"UnifiedTaskManager/services/api-gateway/internal/service"
+	"unified-task-manager/services/api-gateway/internal/config"
+	"unified-task-manager/services/api-gateway/internal/handler"
+	"unified-task-manager/services/api-gateway/internal/service"
 )
 
 func main() {

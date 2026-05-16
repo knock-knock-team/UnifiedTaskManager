@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"UnifiedTaskManager/services/task-service/internal/model"
+	"unified-task-manager/services/task-service/internal/model"
 )
 
 type Event struct {

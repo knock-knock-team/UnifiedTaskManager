@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"UnifiedTaskManager/services/user-service/internal/config"
-	"UnifiedTaskManager/services/user-service/internal/event"
-	"UnifiedTaskManager/services/user-service/internal/handler"
-	"UnifiedTaskManager/services/user-service/internal/repository"
-	"UnifiedTaskManager/services/user-service/internal/service"
+	"unified-task-manager/services/user-service/internal/config"
+	"unified-task-manager/services/user-service/internal/event"
+	"unified-task-manager/services/user-service/internal/handler"
+	"unified-task-manager/services/user-service/internal/repository"
+	"unified-task-manager/services/user-service/internal/service"
 )
 
 func main() {

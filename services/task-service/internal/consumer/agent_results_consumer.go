@@ -9,8 +9,8 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	mq "mq-go/mq"
-	"UnifiedTaskManager/services/task-service/internal/repository"
-	"UnifiedTaskManager/services/task-service/internal/service"
+	"unified-task-manager/services/task-service/internal/repository"
+	"unified-task-manager/services/task-service/internal/service"
 )
 
 type AgentCommandsConsumer struct {

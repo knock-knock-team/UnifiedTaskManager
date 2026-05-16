@@ -84,8 +84,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [newProjectRolePermissions, setNewProjectRolePermissions] = useState([]);
   const [showAdvancedProjectPermissions, setShowAdvancedProjectPermissions] = useState(false);
   const [taskComments, setTaskComments] = useState([]);
+  const [projectActivity, setProjectActivity] = useState([]);
+  const [taskHistory, setTaskHistory] = useState([]);
   const [commentDraft, setCommentDraft] = useState('');
   const [isLoadingComments, setIsLoadingComments] = useState(false);
+  const [isLoadingActivity, setIsLoadingActivity] = useState(false);
+  const [isLoadingTaskHistory, setIsLoadingTaskHistory] = useState(false);
   const [isSavingComment, setIsSavingComment] = useState(false);
   const [inlineEditTaskId, setInlineEditTaskId] = useState('');
   const [inlineEditTitle, setInlineEditTitle] = useState('');
@@ -124,8 +128,10 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [taskBoardView, setTaskBoardView] = useState(() => localStorage.getItem('taskBoardView') || 'board');
   const [boardConnected, setBoardConnected] = useState(false);
   const [taskConflict, setTaskConflict] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
   const editorBaseTaskRef = useRef(null);
   const editorDirtyRef = useRef(false);
+  const confirmResolverRef = useRef(null);
   const [calendarCursor, setCalendarCursor] = useState(() => new Date());
 
   const formatNotificationError = useCallback((error, fallbackMessage) => {
@@ -159,6 +165,25 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
     return message || fallbackMessage;
   }, []);
+
+  const closeConfirmDialog = useCallback((result) => {
+    const resolver = confirmResolverRef.current;
+    confirmResolverRef.current = null;
+    setConfirmDialog(null);
+    resolver?.(result);
+  }, []);
+
+  const requestConfirm = useCallback((options) => new Promise((resolve) => {
+    confirmResolverRef.current?.(false);
+    confirmResolverRef.current = resolve;
+    setConfirmDialog({
+      title: options?.title || 'Подтвердите действие',
+      message: options?.message || 'Это действие нельзя отменить.',
+      confirmLabel: options?.confirmLabel || 'Подтвердить',
+      cancelLabel: options?.cancelLabel || 'Отмена',
+      tone: options?.tone || 'danger'
+    });
+  }), []);
 
   // Загрузить поиск из localStorage (был сохранён ранее)
   useEffect(() => {
@@ -236,6 +261,60 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     assigneeOptions.forEach((item) => map.set(item.userId, item.displayName));
     return map;
   }, [assigneeOptions]);
+
+  const userLabelById = useMemo(() => {
+    const map = new Map();
+    if (profile?.id) {
+      map.set(profile.id, profile.name || profile.email || profile.id);
+    }
+    Object.entries(memberDirectory).forEach(([id, user]) => {
+      map.set(id, user?.name || user?.email || user?.tag || id);
+    });
+    assigneeOptions.forEach((item) => map.set(item.userId, item.displayName));
+    return map;
+  }, [assigneeOptions, memberDirectory, profile]);
+
+  const actorLabel = useCallback((actorUserId) => {
+    const id = String(actorUserId || '').trim();
+    if (!id) return 'Система';
+    return userLabelById.get(id) || id;
+  }, [userLabelById]);
+
+  const formatActivityTime = useCallback((value) => {
+    if (!value) return '';
+    return new Date(value).toLocaleString();
+  }, []);
+
+  const changeLabels = useMemo(() => ({
+    title: 'Название',
+    description: 'Описание',
+    status: 'Колонка',
+    priority: 'Приоритет',
+    dueAt: 'Срок',
+    assignees: 'Исполнители',
+    tags: 'Теги',
+    completed: 'Готовность'
+  }), []);
+
+  const activityChangeLabels = useCallback((event) => {
+    const changes = event?.metadata?.changes;
+    if (!changes || typeof changes !== 'object') return [];
+    return Object.keys(changes).map((key) => changeLabels[key] || key);
+  }, [changeLabels]);
+
+  const shouldRefreshActivityForBoardEvent = useCallback((event) => {
+    return [
+      'task.created',
+      'task.updated',
+      'task.deleted',
+      'tasks.reordered',
+      'task.comment.added',
+      'column.created',
+      'column.updated',
+      'column.deleted',
+      'columns.reordered'
+    ].includes(event?.type);
+  }, []);
 
   const visibleTeamPermissionOptions = useMemo(() => {
     if (showAdvancedTeamPermissions) {
@@ -702,16 +781,68 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
   }, [accessToken, onUpdateAccessToken, showNotification, taskApiBase]);
 
+  const loadProjectActivity = useCallback(async (teamId, projectId, options = {}) => {
+    if (!accessToken || !teamId || !projectId) return;
+    const silent = Boolean(options.silent);
+    if (!silent) {
+      setIsLoadingActivity(true);
+    }
+    try {
+      const data = await request(
+        taskApiBase,
+        accessToken,
+        `/v1/task-activity?projectId=${encodeURIComponent(projectId)}&limit=40`,
+        { auth: true, headers: { 'X-Team-Id': teamId } },
+        onUpdateAccessToken
+      );
+      setProjectActivity(Array.isArray(data.items) ? data.items : []);
+    } catch (error) {
+      showNotification(error.message || 'Не удалось загрузить активность', 'error');
+    } finally {
+      if (!silent) {
+        setIsLoadingActivity(false);
+      }
+    }
+  }, [accessToken, onUpdateAccessToken, showNotification, taskApiBase]);
+
+  const loadTaskHistory = useCallback(async (taskId, options = {}) => {
+    if (!accessToken || !taskId || !selectedTeamId) return;
+    const silent = Boolean(options.silent);
+    if (!silent) {
+      setIsLoadingTaskHistory(true);
+    }
+    try {
+      const data = await request(
+        taskApiBase,
+        accessToken,
+        `/v1/tasks/${encodeURIComponent(taskId)}/history?limit=40`,
+        { auth: true, headers: { 'X-Team-Id': selectedTeamId } },
+        onUpdateAccessToken
+      );
+      setTaskHistory(Array.isArray(data.items) ? data.items : []);
+    } catch (error) {
+      showNotification(error.message || 'Не удалось загрузить историю задачи', 'error');
+    } finally {
+      if (!silent) {
+        setIsLoadingTaskHistory(false);
+      }
+    }
+  }, [accessToken, onUpdateAccessToken, selectedTeamId, showNotification, taskApiBase]);
+
   const resyncBoard = useCallback(() => {
     if (!selectedTeamId || !selectedProjectId) return;
     void loadColumns(selectedTeamId, selectedProjectId);
     void loadTasks(selectedTeamId, selectedProjectId);
-  }, [loadColumns, loadTasks, selectedProjectId, selectedTeamId]);
+    void loadProjectActivity(selectedTeamId, selectedProjectId);
+  }, [loadColumns, loadProjectActivity, loadTasks, selectedProjectId, selectedTeamId]);
 
   const handleBoardEvent = useCallback((event) => {
     if (!event?.type) return;
     if (event.type === 'board.snapshot') {
       applyBoardSnapshot(setTasks, setColumns, event);
+      if (selectedTeamId && selectedProjectId) {
+        void loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
+      }
       return;
     }
     applyBoardEventToTasks(setTasks, event, {
@@ -738,7 +869,13 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       }
     });
     applyBoardEventToColumns(setColumns, event, profile?.id || '');
-  }, [editorTask?.id, profile?.id, showNotification]);
+    if (shouldRefreshActivityForBoardEvent(event)) {
+      void loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
+      if (editorTask?.id && (event.taskId === editorTask.id || event.task?.id === editorTask.id)) {
+        void loadTaskHistory(editorTask.id, { silent: true });
+      }
+    }
+  }, [editorTask?.id, loadProjectActivity, loadTaskHistory, profile?.id, selectedProjectId, selectedTeamId, shouldRefreshActivityForBoardEvent, showNotification]);
 
   useBoardSync({
     apiBase: taskApiBase,
@@ -776,7 +913,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   }, [accessToken, editorTask?.id, onUpdateAccessToken, selectedTeamId, taskApiBase]);
 
   const loadTaskComments = useCallback(async (taskId) => {
-    if (!accessToken || !taskId || !selectedTeamId || !selectedProjectId) return;
+    if (!accessToken || !taskId || !selectedTeamId) return;
     setIsLoadingComments(true);
     try {
       const data = await request(
@@ -802,13 +939,15 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       } catch {
         // Ignore read marker errors so the thread still opens.
       }
-      await loadTasks(selectedTeamId, selectedProjectId);
+      setTasks((prev) => prev.map((item) => (
+        item.id === taskId ? { ...item, unreadComments: 0 } : item
+      )));
     } catch (error) {
       showNotification(error.message || 'Не удалось загрузить переписку', 'error');
     } finally {
       setIsLoadingComments(false);
     }
-  }, [accessToken, loadTasks, onUpdateAccessToken, selectedProjectId, selectedTeamId, showNotification, taskApiBase]);
+  }, [accessToken, onUpdateAccessToken, selectedTeamId, showNotification, taskApiBase]);
 
   const loadDeadlineSettings = useCallback(async (teamId, projectId) => {
     if (!accessToken || !teamId || !projectId) return;
@@ -857,6 +996,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       setSelectedProjectId('');
       setTasks([]);
       setColumns([]);
+      setProjectActivity([]);
+      setTaskHistory([]);
       setTeamRoles([]);
       setTeamMembers([]);
       return;
@@ -872,26 +1013,30 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       storage.taskProjectName = '';
       setTasks([]);
       setColumns([]);
+      setProjectActivity([]);
+      setTaskHistory([]);
       closeTaskEditor();
       return;
     }
     closeTaskEditor();
     void loadColumns(selectedTeamId, selectedProjectId);
     void loadTasks(selectedTeamId, selectedProjectId);
+    void loadProjectActivity(selectedTeamId, selectedProjectId);
     void loadProjectDirectory(selectedTeamId, selectedProjectId);
     void loadDeadlineSettings(selectedTeamId, selectedProjectId);
-  }, [activeProject, closeTaskEditor, selectedProjectId, selectedTeamId, loadColumns, loadDeadlineSettings, loadProjectDirectory, loadTasks]);
+  }, [activeProject, closeTaskEditor, selectedProjectId, selectedTeamId, loadColumns, loadDeadlineSettings, loadProjectActivity, loadProjectDirectory, loadTasks]);
 
   useEffect(() => {
     if (!selectedTeamId || !selectedProjectId) return undefined;
     const handleAssistantRefresh = () => {
       void loadColumns(selectedTeamId, selectedProjectId);
       void loadTasks(selectedTeamId, selectedProjectId);
+      void loadProjectActivity(selectedTeamId, selectedProjectId);
       void loadProjectDirectory(selectedTeamId, selectedProjectId);
     };
     window.addEventListener('assistant:task-data-changed', handleAssistantRefresh);
     return () => window.removeEventListener('assistant:task-data-changed', handleAssistantRefresh);
-  }, [loadColumns, loadProjectDirectory, loadTasks, selectedProjectId, selectedTeamId]);
+  }, [loadColumns, loadProjectActivity, loadProjectDirectory, loadTasks, selectedProjectId, selectedTeamId]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -910,7 +1055,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   useEffect(() => {
     if (!editorTask) return;
     void loadTaskComments(editorTask.id);
-  }, [editorTask, loadTaskComments]);
+    void loadTaskHistory(editorTask.id);
+  }, [editorTask, loadTaskComments, loadTaskHistory]);
 
   useEffect(() => {
     if (!selectedMemberStatsUserId) return;
@@ -944,6 +1090,17 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [openTaskMenuTaskId]);
+
+  useEffect(() => {
+    if (!confirmDialog) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        closeConfirmDialog(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [closeConfirmDialog, confirmDialog]);
 
   const handleCreateTeam = async (event) => {
     event.preventDefault();
@@ -1118,7 +1275,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (!selectedTeamId || !selectedProjectId) return;
     const project = projects.find((item) => item.id === selectedProjectId);
     const projectTitle = project?.name || 'проект';
-    if (!window.confirm(`Удалить проект «${projectTitle}»?`)) {
+    const confirmed = await requestConfirm({
+      title: 'Удалить проект?',
+      message: `Проект «${projectTitle}» будет удалён вместе с настройками доступа. Это действие нельзя отменить.`,
+      confirmLabel: 'Удалить проект'
+    });
+    if (!confirmed) {
       return;
     }
     try {
@@ -1144,7 +1306,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (!selectedTeamId) return;
     const team = teams.find((item) => item.id === selectedTeamId);
     const teamTitle = team?.name || 'команду';
-    if (!window.confirm(`Вы точно уверены, что хотите удалить команду «${teamTitle}»? Это действие нельзя отменить.`)) {
+    const confirmed = await requestConfirm({
+      title: 'Удалить команду?',
+      message: `Команда «${teamTitle}» и связанные данные будут удалены. Это действие нельзя отменить.`,
+      confirmLabel: 'Удалить команду'
+    });
+    if (!confirmed) {
       return;
     }
     try {
@@ -1197,6 +1364,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       } else {
         await loadColumns(selectedTeamId, selectedProjectId);
       }
+      await loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
     } catch (error) {
       showNotification(error.message || 'Не удалось создать колонку', 'error');
     }
@@ -1206,7 +1374,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (!selectedTeamId || !selectedProjectId) return;
     const column = boardColumns.find((item) => item.id === columnId);
     const columnTitle = column?.title || 'эту колонку';
-    if (!window.confirm(`Удалить колонку «${columnTitle}»?`)) {
+    const confirmed = await requestConfirm({
+      title: 'Удалить колонку?',
+      message: `Колонка «${columnTitle}» будет удалена, если в ней нет задач.`,
+      confirmLabel: 'Удалить колонку'
+    });
+    if (!confirmed) {
       return;
     }
     if (tasks.some((task) => String(task.status || '').trim() === String(columnId || '').trim())) {
@@ -1220,6 +1393,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         headers: { 'X-Team-Id': selectedTeamId }
       }, onUpdateAccessToken);
       await loadColumns(selectedTeamId, selectedProjectId);
+      await loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
       setTaskForm((prev) => ({
         ...prev,
         columnId: prev.columnId === columnId ? '' : prev.columnId
@@ -1465,6 +1639,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       setTaskSuggestion(null);
       resetTaskForm(taskForm.columnId);
       await loadTasks(selectedTeamId, selectedProjectId);
+      await loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
     } catch (error) {
       showNotification(error.message || 'Не удалось сохранить задачу', 'error');
     } finally {
@@ -1514,7 +1689,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       editorDirtyRef.current = false;
       showNotification('Задача обновлена', 'success');
       setEditorTaskSuggestion(null);
-      await loadTaskComments(editorTask.id);
+      await loadTaskHistory(editorTask.id, { silent: true });
+      await loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
     } catch (error) {
       showNotification(error.message || 'Не удалось обновить задачу', 'error');
     }
@@ -1540,6 +1716,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       }, onUpdateAccessToken);
       setCommentDraft('');
       await loadTaskComments(editorTask.id);
+      await loadTaskHistory(editorTask.id, { silent: true });
+      await loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
       showNotification('Сообщение отправлено', 'success');
     } catch (error) {
       showNotification(error.message || 'Не удалось отправить сообщение', 'error');
@@ -1552,7 +1730,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (!editorTask || !selectedTeamId || !commentId) {
       return;
     }
-    if (!window.confirm('Удалить сообщение?')) {
+    const confirmed = await requestConfirm({
+      title: 'Удалить сообщение?',
+      message: 'Комментарий исчезнет из переписки по задаче.',
+      confirmLabel: 'Удалить сообщение'
+    });
+    if (!confirmed) {
       return;
     }
     try {
@@ -1562,6 +1745,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         headers: { 'X-Team-Id': selectedTeamId }
       }, onUpdateAccessToken);
       await loadTaskComments(editorTask.id);
+      await loadTaskHistory(editorTask.id, { silent: true });
+      await loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
       showNotification('Сообщение удалено', 'success');
     } catch (error) {
       showNotification(error.message || 'Не удалось удалить сообщение', 'error');
@@ -1570,7 +1755,13 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
 
   const handleDeleteTask = async (taskId) => {
     if (!selectedTeamId || !selectedProjectId) return;
-    if (!window.confirm('Удалить задачу?')) return;
+    const task = tasks.find((item) => item.id === taskId);
+    const confirmed = await requestConfirm({
+      title: 'Удалить задачу?',
+      message: task?.title ? `Задача «${task.title}» будет удалена из проекта.` : 'Задача будет удалена из проекта.',
+      confirmLabel: 'Удалить задачу'
+    });
+    if (!confirmed) return;
     try {
       await request(taskApiBase, accessToken, `/v1/tasks/${taskId}`, {
         method: 'DELETE',
@@ -1579,6 +1770,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       }, onUpdateAccessToken);
       showNotification('Задача удалена', 'success');
       await loadTasks(selectedTeamId, selectedProjectId);
+      await loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
     } catch (error) {
       showNotification(error.message || 'Не удалось удалить задачу', 'error');
     }
@@ -2184,6 +2376,31 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
           </details>
 
           <details className="sidebar-card">
+            <summary>Активность проекта</summary>
+            <div className="activity-feed">
+              {isLoadingActivity ? (
+                <p className="muted-caption">Загружаем активность...</p>
+              ) : projectActivity.length === 0 ? (
+                <p className="muted-caption">История появится после изменений задач.</p>
+              ) : projectActivity.map((event) => {
+                const labels = activityChangeLabels(event);
+                return (
+                  <article key={event.id} className="activity-item">
+                    <div className="activity-item__dot" aria-hidden="true" />
+                    <div className="activity-item__body">
+                      <strong>{event.summary || event.eventType}</strong>
+                      <span>{actorLabel(event.actorUserId)} · {formatActivityTime(event.createdAt)}</span>
+                      {event.metadata?.title && <p>{event.metadata.title}</p>}
+                      {labels.length > 0 && <p>Поля: {labels.join(', ')}</p>}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+            <button type="button" className="ghost compact-btn" disabled={!selectedProjectId || isLoadingActivity} onClick={() => void loadProjectActivity(selectedTeamId, selectedProjectId)}>Обновить ленту</button>
+          </details>
+
+          <details className="sidebar-card">
             <summary>Колонки</summary>
             <form className="sidebar-form" onSubmit={handleCreateColumn}>
               <div className="inline-form">
@@ -2486,7 +2703,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                   {items.length === 0 ? <p className="empty-state">Пусто</p> : items.map((task) => (
                     <article
                       key={task.id}
-                      className={`task-card ${openTaskMenuTaskId === task.id ? 'task-card--menu-open' : ''} ${draggingTaskId === task.id ? 'dragging' : ''} ${isUrgentDeadline(task) ? 'urgent-deadline' : ''} ${isTaskDone(task) ? 'completed' : ''} ${draggingTaskId && dragOverTaskColumnId === column.id && dragOverTaskId === task.id && taskDropPosition === 'before' ? 'task-drag-insert-before' : ''} ${draggingTaskId && dragOverTaskColumnId === column.id && dragOverTaskId === task.id && taskDropPosition === 'after' ? 'task-drag-insert-after' : ''}`}
+                      className={`task-card ${openTaskMenuTaskId === task.id ? 'task-card--menu-open' : ''} ${draggingTaskId === task.id ? 'dragging' : ''} ${isTaskOverdue(task) ? 'overdue' : ''} ${isUrgentDeadline(task) ? 'urgent-deadline' : ''} ${isTaskDone(task) ? 'completed' : ''} ${draggingTaskId && dragOverTaskColumnId === column.id && dragOverTaskId === task.id && taskDropPosition === 'before' ? 'task-drag-insert-before' : ''} ${draggingTaskId && dragOverTaskColumnId === column.id && dragOverTaskId === task.id && taskDropPosition === 'after' ? 'task-drag-insert-after' : ''}`}
                       draggable
                       onDragStart={(event) => onTaskDragStart(event, task.id)}
                       onDragEnd={onTaskDragEnd}
@@ -2541,6 +2758,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                           >
                             {priorityLabel(task.priority)}
                           </span>
+                          {isTaskOverdue(task) && <span className="task-overdue-badge">Просрочено</span>}
                           <div className="task-card-menu-shell">
                             <button
                               type="button"
@@ -2598,7 +2816,11 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                       )}
                       {task.description && <p>{task.description}</p>}
                       <div className="task-card-meta">
-                        {task.dueAt ? <span>Срок: {new Date(task.dueAt).toLocaleString()}</span> : <span>Без срока</span>}
+                        {task.dueAt ? (
+                          <span className={isTaskOverdue(task) ? 'task-card-due-overdue' : ''}>
+                            Срок: {new Date(task.dueAt).toLocaleString()}
+                          </span>
+                        ) : <span>Без срока</span>}
                         {hasTaskAssignees(task) ? (
                           <span className="task-card-assignees-row">
                             <span className="task-card-meta-kicker">Исп.</span>
@@ -3061,11 +3283,56 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                     </div>
                   </form>
                 </section>
+
+                <section className="task-comments-panel task-history-panel">
+                  <div className="task-comments-header">
+                    <div>
+                      <p className="section-label">ИСТОРИЯ</p>
+                      <h4>Изменения задачи</h4>
+                    </div>
+                    <span className="task-comments-count">{taskHistory.length}</span>
+                  </div>
+                  <div className="activity-feed task-history-list">
+                    {isLoadingTaskHistory ? (
+                      <p className="empty-state">Загружаем историю...</p>
+                    ) : taskHistory.length === 0 ? (
+                      <p className="empty-state">Истории изменений пока нет</p>
+                    ) : taskHistory.map((event) => {
+                      const labels = activityChangeLabels(event);
+                      return (
+                        <article key={event.id} className="activity-item">
+                          <div className="activity-item__dot" aria-hidden="true" />
+                          <div className="activity-item__body">
+                            <strong>{event.summary || event.eventType}</strong>
+                            <span>{actorLabel(event.actorUserId)} · {formatActivityTime(event.createdAt)}</span>
+                            {labels.length > 0 && <p>Изменено: {labels.join(', ')}</p>}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
               </div>
             </div>
           </div>
         )}
       </article>
+      {confirmDialog && (
+        <div className="modal-backdrop" onMouseDown={() => closeConfirmDialog(false)} role="presentation">
+          <div className="modal confirm-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
+            <div className="confirm-modal__icon" aria-hidden="true">!</div>
+            <div className="confirm-modal__content">
+              <p className="section-label">ПОДТВЕРЖДЕНИЕ</p>
+              <h3 id="confirm-dialog-title">{confirmDialog.title}</h3>
+              <p>{confirmDialog.message}</p>
+            </div>
+            <div className="confirm-modal__actions">
+              <button type="button" className="ghost" onClick={() => closeConfirmDialog(false)}>{confirmDialog.cancelLabel}</button>
+              <button type="button" className={confirmDialog.tone === 'danger' ? 'danger' : ''} onClick={() => closeConfirmDialog(true)} autoFocus>{confirmDialog.confirmLabel}</button>
+            </div>
+          </div>
+        </div>
+      )}
       <TaskConflictDialog
         conflict={taskConflict}
         onClose={() => setTaskConflict(null)}

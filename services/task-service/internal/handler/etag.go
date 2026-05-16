@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"UnifiedTaskManager/services/task-service/internal/model"
-	"UnifiedTaskManager/services/task-service/internal/service"
+	"unified-task-manager/services/task-service/internal/model"
+	"unified-task-manager/services/task-service/internal/service"
 )
 
 func writeTaskJSON(w http.ResponseWriter, status int, task model.Task) {

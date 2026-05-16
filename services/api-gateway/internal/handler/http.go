@@ -15,7 +15,7 @@ import (
 
 	observability "observability-go"
 
-	"UnifiedTaskManager/services/api-gateway/internal/service"
+	"unified-task-manager/services/api-gateway/internal/service"
 )
 
 type HTTPHandler struct {
@@ -350,6 +350,7 @@ func isUserRoute(path string) bool {
 func isTaskRoute(path string) bool {
 	return strings.HasPrefix(path, "/v1/tasks") ||
 		strings.HasPrefix(path, "/v1/task-columns") ||
+		strings.HasPrefix(path, "/v1/task-activity") ||
 		strings.HasPrefix(path, "/v1/boards")
 }
 
