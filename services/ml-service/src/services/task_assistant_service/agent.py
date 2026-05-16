@@ -35,12 +35,15 @@ class TaskAssistantService:
             ("human", TASKS_PROMPT)
         ])
         chain = prompt | self.runnable
-        input_d = create_tasks_prompt_input_d(**request.model_dump())
+        input_d = create_tasks_prompt_input_d(
+            raw_description=request.raw_task_description, 
+            task_name=request.current_task_name or "",
+        )
         response = await chain.ainvoke(input_d)
         response_d = safe_parse_json(response.content)
         return TaskNameDescriptionGenerationResponse(
             request_id=request.request_id,
-            raw_task_descriprion=request.raw_task_description,
+            raw_task_description=request.raw_task_description,
             task_name=response_d.get("task_name", ""),
             task_description=response_d.get("task_description", "")
         )
