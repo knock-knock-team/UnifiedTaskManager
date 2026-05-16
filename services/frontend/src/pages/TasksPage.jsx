@@ -96,6 +96,31 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [selectedMemberStatsUserId, setSelectedMemberStatsUserId] = useState('');
   const [openTaskMenuTaskId, setOpenTaskMenuTaskId] = useState('');
 
+  const formatNotificationError = useCallback((error, fallbackMessage) => {
+    const message = String(error?.message || '').trim();
+    const lower = message.toLowerCase();
+    if (!message) return fallbackMessage;
+    if (lower.includes('dependency unavailable')) {
+      return 'Сервис уведомлений сейчас недоступен.';
+    }
+    if (lower.includes('deadline is not set')) {
+      return 'У задачи не указан дедлайн.';
+    }
+    if (lower.includes('assignee is not set')) {
+      return 'У задачи не назначен исполнитель.';
+    }
+    if (lower.includes('assignee email was not found') || lower.includes('assignee email is empty')) {
+      return 'У исполнителя не заполнен email, уведомление отправить нельзя.';
+    }
+    if (lower.includes('smtp host is not configured') || lower.includes('smtp')) {
+      return 'Почтовый сервис уведомлений не настроен.';
+    }
+    if (lower.includes('task is already done')) {
+      return 'Для выполненной задачи уведомление не отправляется.';
+    }
+    return message || fallbackMessage;
+  }, []);
+
   // Загрузить поиск из localStorage (был сохранён ранее)
   useEffect(() => {
     const saved = localStorage.getItem('taskBoardSearchQuery');
@@ -569,7 +594,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     setIsLoadingDeadlineSettings(true);
     try {
       const data = await request(
-        taskApiBase,
+        apiBase,
         accessToken,
         `/v1/projects/${encodeURIComponent(projectId)}/notification-settings`,
         { auth: true, headers: { 'X-Team-Id': teamId } },
@@ -594,7 +619,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     } finally {
       setIsLoadingDeadlineSettings(false);
     }
-  }, [accessToken, onUpdateAccessToken, taskApiBase]);
+  }, [accessToken, apiBase, onUpdateAccessToken]);
 
   useEffect(() => {
     void loadTeams();
@@ -1316,14 +1341,14 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
     setPendingNotificationTaskId(task.id);
     try {
-      await request(taskApiBase, accessToken, `/v1/tasks/${encodeURIComponent(task.id)}/deadline-notification`, {
+      await request(apiBase, accessToken, `/v1/tasks/${encodeURIComponent(task.id)}/deadline-notification`, {
         method: 'POST',
         auth: true,
         headers: { 'X-Team-Id': selectedTeamId }
       }, onUpdateAccessToken);
       showNotification('Уведомление о дедлайне отправлено', 'success');
     } catch (error) {
-      showNotification(error.message || 'Не удалось отправить уведомление', 'error');
+      showNotification(formatNotificationError(error, 'Не удалось отправить уведомление'), 'error');
     } finally {
       setPendingNotificationTaskId('');
     }
@@ -1345,7 +1370,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     setIsSavingDeadlineSettings(true);
     try {
       const data = await request(
-        taskApiBase,
+        apiBase,
         accessToken,
         `/v1/projects/${encodeURIComponent(selectedProjectId)}/notification-settings`,
         {
@@ -1367,7 +1392,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       });
       showNotification('Настройки дедлайнов сохранены', 'success');
     } catch (error) {
-      showNotification(error.message || 'Не удалось сохранить настройки дедлайнов', 'error');
+      showNotification(formatNotificationError(error, 'Не удалось сохранить настройки дедлайнов'), 'error');
     } finally {
       setIsSavingDeadlineSettings(false);
     }
