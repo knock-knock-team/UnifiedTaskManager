@@ -16,12 +16,13 @@ import (
 var ErrInvalidToken = errors.New("invalid token")
 
 type Claims struct {
-	ID        string `json:"jti"`
-	Subject   string `json:"sub"`
-	TokenType string `json:"typ"`
-	Role      string `json:"role"`
-	IssuedAt  int64  `json:"iat"`
-	ExpiresAt int64  `json:"exp"`
+	ID        string   `json:"jti"`
+	Subject   string   `json:"sub"`
+	TokenType string   `json:"typ"`
+	Role      string   `json:"role"`
+	TeamIDs   []string `json:"teamIds,omitempty"`
+	IssuedAt  int64    `json:"iat"`
+	ExpiresAt int64    `json:"exp"`
 }
 
 type TokenManager struct {
@@ -46,14 +47,16 @@ func (tm *TokenManager) RefreshTokenTTL() time.Duration {
 	return tm.refreshTokenTTL
 }
 
-func (tm *TokenManager) NewTokenPair(userID, role string) (accessToken string, refreshToken string, expiresIn int64, err error) {
+func (tm *TokenManager) NewTokenPair(userID, role string, teamIDs []string) (accessToken string, refreshToken string, expiresIn int64, err error) {
 	now := time.Now().UTC()
+	normalizedTeamIDs := normalizeTeamIDs(teamIDs)
 
 	accessClaims := Claims{
 		ID:        newTokenID(),
 		Subject:   userID,
 		TokenType: "access",
 		Role:      role,
+		TeamIDs:   normalizedTeamIDs,
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(tm.accessTokenTTL).Unix(),
 	}
@@ -62,6 +65,7 @@ func (tm *TokenManager) NewTokenPair(userID, role string) (accessToken string, r
 		Subject:   userID,
 		TokenType: "refresh",
 		Role:      role,
+		TeamIDs:   normalizedTeamIDs,
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(tm.refreshTokenTTL).Unix(),
 	}
@@ -135,4 +139,27 @@ func newTokenID() string {
 		return fmt.Sprintf("tok-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
+}
+
+func normalizeTeamIDs(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		result = append(result, v)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }

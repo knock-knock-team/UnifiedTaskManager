@@ -5,6 +5,13 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     name TEXT NOT NULL,
+    tag TEXT NOT NULL DEFAULT '',
+    bio TEXT NOT NULL DEFAULT '',
+    github_url TEXT NOT NULL DEFAULT '',
+    linkedin_url TEXT NOT NULL DEFAULT '',
+    telegram TEXT NOT NULL DEFAULT '',
+    website_url TEXT NOT NULL DEFAULT '',
+    secondary_email TEXT NOT NULL DEFAULT '',
     role TEXT NOT NULL CHECK (role IN ('user', 'manager', 'admin')),
     status TEXT NOT NULL CHECK (status IN ('active', 'inactive', 'suspended')),
     created_at TIMESTAMPTZ NOT NULL,
@@ -14,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_deleted_at ON users(deleted_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_tag_unique ON users(tag) WHERE tag <> '';
 
 CREATE TABLE IF NOT EXISTS outbox_events (
     id UUID PRIMARY KEY,

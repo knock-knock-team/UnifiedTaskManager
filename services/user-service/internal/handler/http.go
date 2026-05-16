@@ -13,6 +13,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"UnifiedTaskManager/services/user-service/internal/model"
 	"UnifiedTaskManager/services/user-service/internal/repository"
 	"UnifiedTaskManager/services/user-service/internal/service"
 )
@@ -69,8 +70,15 @@ func (h *HTTPHandler) Routes() http.Handler {
 	mux.HandleFunc("/v1/auth/login", h.login)
 	mux.HandleFunc("/v1/auth/refresh", h.refresh)
 	mux.HandleFunc("/v1/users/me", h.auth(h.usersMe))
+	mux.HandleFunc("/v1/users/lookup", h.auth(h.userLookup))
 	mux.HandleFunc("/v1/users", h.auth(h.users))
 	mux.HandleFunc("/v1/users/", h.auth(h.userByID))
+	mux.HandleFunc("/v1/teams", h.auth(h.teams))
+	mux.HandleFunc("/v1/teams/invites", h.auth(h.teamInvites))
+	mux.HandleFunc("/v1/teams/invites/", h.auth(h.teamInvites))
+	mux.HandleFunc("/v1/teams/invites/accept", h.auth(h.acceptTeamInvite))
+	mux.HandleFunc("/v1/teams/", h.auth(h.teamByID))
+	mux.HandleFunc("/v1/permissions/check", h.auth(h.permissionsCheck))
 	mux.HandleFunc("/internal/admin/outbox/flush", h.auth(h.requireAdmin(h.adminOutboxFlush)))
 	mux.HandleFunc("/internal/admin/outbox/clean", h.auth(h.requireAdmin(h.adminOutboxClean)))
 	return h.withCORS(mux)
@@ -207,6 +215,7 @@ func (h *HTTPHandler) usersMe(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPatch:
 		var req struct {
 			Name           *string `json:"name"`
+			Tag            *string `json:"tag"`
 			Bio            *string `json:"bio"`
 			GitHubURL      *string `json:"githubUrl"`
 			LinkedInURL    *string `json:"linkedInUrl"`
@@ -220,6 +229,7 @@ func (h *HTTPHandler) usersMe(w http.ResponseWriter, r *http.Request) {
 		}
 		user, err := h.svc.UpdateCurrentUser(userID, service.ProfileUpdate{
 			Name:           req.Name,
+			Tag:            req.Tag,
 			Bio:            req.Bio,
 			GitHubURL:      req.GitHubURL,
 			LinkedInURL:    req.LinkedInURL,
@@ -236,6 +246,34 @@ func (h *HTTPHandler) usersMe(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeMethodNotAllowed(w)
 	}
+}
+
+func (h *HTTPHandler) userLookup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+	query := r.URL.Query()
+	id := strings.TrimSpace(query.Get("id"))
+	email := strings.TrimSpace(query.Get("email"))
+	tag := strings.TrimSpace(query.Get("tag"))
+
+	var (
+		user model.User
+		err  error
+	)
+	if id != "" {
+		user, err = h.svc.LookupUserByID(currentUserID(r.Context()), id)
+	} else if email != "" {
+		user, err = h.svc.LookupUserByEmail(currentUserID(r.Context()), email)
+	} else {
+		user, err = h.svc.LookupUserByTag(currentUserID(r.Context()), tag)
+	}
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, user)
 }
 
 func (h *HTTPHandler) users(w http.ResponseWriter, r *http.Request) {
@@ -302,6 +340,366 @@ func (h *HTTPHandler) userByID(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		writeMethodNotAllowed(w)
+	}
+}
+
+func (h *HTTPHandler) teams(w http.ResponseWriter, r *http.Request) {
+	currentUserID := currentUserID(r.Context())
+	switch r.Method {
+	case http.MethodGet:
+		teams, err := h.svc.ListMyTeams(currentUserID)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"items": teams})
+	case http.MethodPost:
+		var req struct {
+			Name string `json:"name"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		team, err := h.svc.CreateTeam(currentUserID, req.Name)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, team)
+	default:
+		writeMethodNotAllowed(w)
+	}
+}
+
+func (h *HTTPHandler) acceptTeamInvite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	member, err := h.svc.AcceptTeamInvite(currentUserID(r.Context()), req.Token)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, member)
+}
+
+func (h *HTTPHandler) teamInvites(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/v1/teams/invites")
+	path = strings.Trim(path, "/")
+
+	if path == "" {
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w)
+			return
+		}
+		items, err := h.svc.ListMyPendingInvites(currentUserID(r.Context()))
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+		return
+	}
+
+	parts := strings.Split(path, "/")
+	if len(parts) == 2 && parts[1] == "accept" {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w)
+			return
+		}
+		inviteID := strings.TrimSpace(parts[0])
+		if inviteID == "" {
+			writeJSON(w, http.StatusNotFound, errorBody("NOT_FOUND", "Not found"))
+			return
+		}
+		member, err := h.svc.AcceptTeamInviteByID(currentUserID(r.Context()), inviteID)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, member)
+		return
+	}
+
+	writeJSON(w, http.StatusNotFound, errorBody("NOT_FOUND", "Not found"))
+}
+
+func (h *HTTPHandler) permissionsCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	var req struct {
+		TeamID     string `json:"teamId"`
+		ProjectID  string `json:"projectId"`
+		Permission string `json:"permission"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := h.svc.CheckProjectPermission(currentUserID(r.Context()), req.TeamID, req.ProjectID, req.Permission)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *HTTPHandler) teamByID(w http.ResponseWriter, r *http.Request) {
+	currentUserID := currentUserID(r.Context())
+	path := strings.TrimPrefix(r.URL.Path, "/v1/teams/")
+	if path == "" {
+		writeJSON(w, http.StatusNotFound, errorBody("NOT_FOUND", "Not found"))
+		return
+	}
+
+	parts := strings.Split(path, "/")
+	teamID := strings.TrimSpace(parts[0])
+	if teamID == "" {
+		writeJSON(w, http.StatusNotFound, errorBody("NOT_FOUND", "Not found"))
+		return
+	}
+
+	if len(parts) == 1 {
+		switch r.Method {
+		case http.MethodGet:
+			roles, err := h.svc.ListTeamRoles(currentUserID, teamID)
+			if err != nil {
+				h.writeServiceError(w, err)
+				return
+			}
+			members, err := h.svc.ListTeamMembers(currentUserID, teamID)
+			if err != nil {
+				h.writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"teamId": teamID, "roles": roles, "members": members})
+			return
+		case http.MethodDelete:
+			if err := h.svc.DeleteTeam(currentUserID, teamID); err != nil {
+				h.writeServiceError(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		default:
+			writeMethodNotAllowed(w)
+			return
+		}
+	}
+
+	resource := parts[1]
+	switch resource {
+	case "roles":
+		switch r.Method {
+		case http.MethodGet:
+			roles, err := h.svc.ListTeamRoles(currentUserID, teamID)
+			if err != nil {
+				h.writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"items": roles})
+		case http.MethodPost:
+			var req struct {
+				Key         string   `json:"key"`
+				Name        string   `json:"name"`
+				Permissions []string `json:"permissions"`
+			}
+			if !decodeJSON(w, r, &req) {
+				return
+			}
+			role, err := h.svc.CreateTeamRole(currentUserID, teamID, req.Key, req.Name, req.Permissions)
+			if err != nil {
+				h.writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusCreated, role)
+		default:
+			writeMethodNotAllowed(w)
+		}
+	case "invite":
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w)
+			return
+		}
+		var req struct {
+			Email    string `json:"email"`
+			RoleKey  string `json:"roleKey"`
+			TTLHours int    `json:"ttlHours"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		invite, token, err := h.svc.InviteToTeam(currentUserID, teamID, req.Email, req.RoleKey, req.TTLHours)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]interface{}{"invite": invite, "token": token})
+	case "members":
+		if len(parts) == 2 {
+			if r.Method != http.MethodGet {
+				writeMethodNotAllowed(w)
+				return
+			}
+			members, err := h.svc.ListTeamMembers(currentUserID, teamID)
+			if err != nil {
+				h.writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"items": members})
+			return
+		}
+		if len(parts) == 3 && r.Method == http.MethodPatch {
+			memberUserID := strings.TrimSpace(parts[2])
+			var req struct {
+				RoleKey string `json:"roleKey"`
+			}
+			if !decodeJSON(w, r, &req) {
+				return
+			}
+			member, err := h.svc.UpdateTeamMemberRole(currentUserID, teamID, memberUserID, req.RoleKey)
+			if err != nil {
+				h.writeServiceError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, member)
+			return
+		}
+		writeMethodNotAllowed(w)
+	case "projects":
+		if len(parts) == 2 {
+			switch r.Method {
+			case http.MethodGet:
+				items, err := h.svc.ListTeamProjects(currentUserID, teamID)
+				if err != nil {
+					h.writeServiceError(w, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+			case http.MethodPost:
+				var req struct {
+					Name string `json:"name"`
+				}
+				if !decodeJSON(w, r, &req) {
+					return
+				}
+				project, err := h.svc.CreateProject(currentUserID, teamID, req.Name)
+				if err != nil {
+					h.writeServiceError(w, err)
+					return
+				}
+				writeJSON(w, http.StatusCreated, project)
+			default:
+				writeMethodNotAllowed(w)
+			}
+			return
+		}
+
+		projectID := strings.TrimSpace(parts[2])
+		if projectID == "" {
+			writeJSON(w, http.StatusNotFound, errorBody("NOT_FOUND", "Not found"))
+			return
+		}
+
+		if len(parts) == 3 {
+			switch r.Method {
+			case http.MethodGet:
+				roles, err := h.svc.ListProjectRoles(currentUserID, teamID, projectID)
+				if err != nil {
+					h.writeServiceError(w, err)
+					return
+				}
+				members, err := h.svc.ListProjectMembers(currentUserID, teamID, projectID)
+				if err != nil {
+					h.writeServiceError(w, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]interface{}{"projectId": projectID, "roles": roles, "members": members})
+			case http.MethodDelete:
+				if err := h.svc.DeleteProject(currentUserID, teamID, projectID); err != nil {
+					h.writeServiceError(w, err)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				writeMethodNotAllowed(w)
+			}
+			return
+		}
+
+		if len(parts) >= 4 {
+			subResource := strings.TrimSpace(parts[3])
+			switch subResource {
+			case "roles":
+				switch r.Method {
+				case http.MethodGet:
+					items, err := h.svc.ListProjectRoles(currentUserID, teamID, projectID)
+					if err != nil {
+						h.writeServiceError(w, err)
+						return
+					}
+					writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+				case http.MethodPost:
+					var req struct {
+						Key                string   `json:"key"`
+						Name               string   `json:"name"`
+						Permissions        []string `json:"permissions"`
+						InheritTeamRoleKey string   `json:"inheritTeamRoleKey"`
+					}
+					if !decodeJSON(w, r, &req) {
+						return
+					}
+					item, err := h.svc.CreateProjectRole(currentUserID, teamID, projectID, req.Key, req.Name, req.InheritTeamRoleKey, req.Permissions)
+					if err != nil {
+						h.writeServiceError(w, err)
+						return
+					}
+					writeJSON(w, http.StatusCreated, item)
+				default:
+					writeMethodNotAllowed(w)
+				}
+			case "members":
+				switch r.Method {
+				case http.MethodGet:
+					items, err := h.svc.ListProjectMembers(currentUserID, teamID, projectID)
+					if err != nil {
+						h.writeServiceError(w, err)
+						return
+					}
+					writeJSON(w, http.StatusOK, map[string]interface{}{"items": items})
+				case http.MethodPost:
+					var req struct {
+						UserID  string `json:"userId"`
+						RoleKey string `json:"roleKey"`
+					}
+					if !decodeJSON(w, r, &req) {
+						return
+					}
+					item, err := h.svc.AssignProjectMember(currentUserID, teamID, projectID, req.UserID, req.RoleKey)
+					if err != nil {
+						h.writeServiceError(w, err)
+						return
+					}
+					writeJSON(w, http.StatusCreated, item)
+				default:
+					writeMethodNotAllowed(w)
+				}
+			default:
+				writeJSON(w, http.StatusNotFound, errorBody("NOT_FOUND", "Not found"))
+			}
+			return
+		}
+		writeJSON(w, http.StatusNotFound, errorBody("NOT_FOUND", "Not found"))
+	default:
+		writeJSON(w, http.StatusNotFound, errorBody("NOT_FOUND", "Not found"))
 	}
 }
 

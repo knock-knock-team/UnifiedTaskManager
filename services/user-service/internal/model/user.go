@@ -23,6 +23,7 @@ type User struct {
 	Email          string     `json:"email"`
 	PasswordHash   string     `json:"-"`
 	Name           string     `json:"name"`
+	Tag            string     `json:"tag,omitempty"`
 	Bio            string     `json:"bio,omitempty"`
 	GitHubURL      string     `json:"githubUrl,omitempty"`
 	LinkedInURL    string     `json:"linkedInUrl,omitempty"`

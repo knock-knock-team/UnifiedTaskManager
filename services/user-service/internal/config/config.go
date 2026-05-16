@@ -20,6 +20,7 @@ type Config struct {
 	RabbitEnabled                bool
 	RabbitURL                    string
 	RabbitExchange               string
+	RabbitUserExistsQueue        string
 	OutboxCleanerEnabled         bool
 	OutboxArchiveEnabled         bool
 	OutboxRetentionDays          int
@@ -48,6 +49,7 @@ func FromEnv() Config {
 		RabbitEnabled:                getenvBool("RABBITMQ_ENABLED", false),
 		RabbitURL:                    getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
 		RabbitExchange:               getenv("RABBITMQ_EXCHANGE", "user.events"),
+		RabbitUserExistsQueue:        getenv("RABBITMQ_USER_EXISTS_QUEUE", "user-service.user-exists"),
 		OutboxCleanerEnabled:         getenvBool("OUTBOX_CLEANER_ENABLED", true),
 		OutboxArchiveEnabled:         getenvBool("OUTBOX_ARCHIVE_ENABLED", true),
 		OutboxRetentionDays:          getenvInt("OUTBOX_RETENTION_DAYS", 7),

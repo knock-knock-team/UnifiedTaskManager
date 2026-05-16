@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"strings"
 	"time"
 
 	"UnifiedTaskManager/services/user-service/internal/config"
@@ -42,6 +44,7 @@ func main() {
 	outboxMetrics := event.NewOutboxMetrics()
 	var outboxWorker *event.OutboxWorker
 	var outboxCleaner *event.OutboxCleaner
+	var userExistsConsumer *event.UserExistsConsumer
 	if cfg.RabbitEnabled {
 		rabbitPublisher, err := event.NewRabbitMQPublisher(cfg.RabbitURL, cfg.RabbitExchange)
 		if err != nil {
@@ -54,6 +57,36 @@ func main() {
 		}()
 		publisher = rabbitPublisher
 		log.Printf("rabbitmq publisher enabled exchange=%s", cfg.RabbitExchange)
+
+		userExistsConsumer, err = event.NewUserExistsConsumer(cfg.RabbitURL, cfg.RabbitUserExistsQueue)
+		if err != nil {
+			log.Fatalf("rabbitmq user-exists consumer init failed: %v", err)
+		}
+		defer func() {
+			if err := userExistsConsumer.Close(); err != nil {
+				log.Printf("rabbitmq user-exists consumer close warning: %v", err)
+			}
+		}()
+		go func() {
+			err := userExistsConsumer.Run(ctx, func(_ context.Context, userID string) (bool, error) {
+				userID = strings.TrimSpace(userID)
+				if userID == "" {
+					return false, nil
+				}
+				_, err := repo.FindByID(userID)
+				if err != nil {
+					if errors.Is(err, repository.ErrNotFound) {
+						return false, nil
+					}
+					return false, err
+				}
+				return true, nil
+			})
+			if err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("rabbitmq user-exists consumer stopped: %v", err)
+			}
+		}()
+		log.Printf("rabbitmq user-exists consumer enabled queue=%s", cfg.RabbitUserExistsQueue)
 
 		if outboxRepo, ok := repo.(repository.OutboxRepository); ok {
 			outboxWorker = event.NewOutboxWorker(outboxRepo, publisher, outboxMetrics, 2*time.Second, 100, cfg.OutboxMaxAttempts)

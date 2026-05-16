@@ -31,6 +31,28 @@ type UserService interface {
 	Register(email, password, name string) (model.AuthResponse, error)
 	Login(email, password string) (model.AuthResponse, error)
 	Refresh(refreshToken string) (model.TokenPair, error)
+	LookupUserByID(currentUserID, userID string) (model.User, error)
+	LookupUserByTag(currentUserID, tag string) (model.User, error)
+	LookupUserByEmail(currentUserID, email string) (model.User, error)
+	CreateTeam(currentUserID, name string) (model.Team, error)
+	ListMyTeams(currentUserID string) ([]model.Team, error)
+	DeleteTeam(currentUserID, teamID string) error
+	CreateTeamRole(currentUserID, teamID, key, name string, permissions []string) (model.TeamRole, error)
+	ListTeamRoles(currentUserID, teamID string) ([]model.TeamRole, error)
+	InviteToTeam(currentUserID, teamID, email, roleKey string, ttlHours int) (model.TeamInvite, string, error)
+	AcceptTeamInvite(currentUserID, token string) (model.TeamMember, error)
+	ListMyPendingInvites(currentUserID string) ([]model.TeamInvite, error)
+	AcceptTeamInviteByID(currentUserID, inviteID string) (model.TeamMember, error)
+	ListTeamMembers(currentUserID, teamID string) ([]model.TeamMember, error)
+	UpdateTeamMemberRole(currentUserID, teamID, memberUserID, roleKey string) (model.TeamMember, error)
+	CreateProject(currentUserID, teamID, name string) (model.Project, error)
+	ListTeamProjects(currentUserID, teamID string) ([]model.Project, error)
+	DeleteProject(currentUserID, teamID, projectID string) error
+	CreateProjectRole(currentUserID, teamID, projectID, key, name, inheritTeamRoleKey string, permissions []string) (model.ProjectRole, error)
+	ListProjectRoles(currentUserID, teamID, projectID string) ([]model.ProjectRole, error)
+	AssignProjectMember(currentUserID, teamID, projectID, memberUserID, roleKey string) (model.ProjectMember, error)
+	ListProjectMembers(currentUserID, teamID, projectID string) ([]model.ProjectMember, error)
+	CheckProjectPermission(currentUserID, teamID, projectID, permission string) (model.PermissionCheckResult, error)
 	GetByID(requestorRole, userID string) (model.User, error)
 	GetCurrentUser(currentUserID string) (model.User, error)
 	UpdateCurrentUser(currentUserID string, update ProfileUpdate) (model.User, error)
@@ -43,6 +65,7 @@ type UserService interface {
 
 type ProfileUpdate struct {
 	Name           *string
+	Tag            *string
 	Bio            *string
 	GitHubURL      *string
 	LinkedInURL    *string
@@ -139,7 +162,11 @@ func (s *userService) Refresh(refreshToken string) (model.TokenPair, error) {
 	if err != nil {
 		return model.TokenPair{}, ErrUnauthorized
 	}
-	access, refresh, expiresIn, err := s.tokens.NewTokenPair(user.ID, string(user.Role))
+	teamIDs, err := s.repo.ListTeamIDsByUserID(context.Background(), user.ID)
+	if err != nil {
+		return model.TokenPair{}, err
+	}
+	access, refresh, expiresIn, err := s.tokens.NewTokenPair(user.ID, string(user.Role), teamIDs)
 	if err != nil {
 		return model.TokenPair{}, err
 	}
@@ -148,6 +175,541 @@ func (s *userService) Refresh(refreshToken string) (model.TokenPair, error) {
 		return model.TokenPair{}, ErrUnauthorized
 	}
 	return model.TokenPair{AccessToken: access, RefreshToken: refresh, ExpiresIn: expiresIn}, nil
+}
+
+func (s *userService) CreateTeam(currentUserID, name string) (model.Team, error) {
+	currentUserID = strings.TrimSpace(currentUserID)
+	name = strings.TrimSpace(name)
+	if currentUserID == "" || name == "" {
+		return model.Team{}, ErrBadRequest
+	}
+
+	now := time.Now().UTC()
+	team := model.Team{
+		ID:        newID(),
+		Name:      name,
+		CreatedBy: currentUserID,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	created, err := s.repo.CreateTeam(context.Background(), team)
+	if err != nil {
+		return model.Team{}, err
+	}
+
+	defaultRoles := []model.TeamRole{
+		{TeamID: created.ID, Key: "owner", Name: "Owner", Permissions: []string{"teams.manage", "roles.manage", "members.manage", "projects.manage"}, System: true, CreatedAt: now, UpdatedAt: now},
+		{TeamID: created.ID, Key: "admin", Name: "Admin", Permissions: []string{"roles.manage", "members.manage", "projects.manage"}, System: true, CreatedAt: now, UpdatedAt: now},
+		{TeamID: created.ID, Key: "member", Name: "Member", Permissions: []string{"tasks.read", "tasks.write"}, System: true, CreatedAt: now, UpdatedAt: now},
+	}
+	for _, role := range defaultRoles {
+		if _, err := s.repo.CreateTeamRole(context.Background(), role); err != nil {
+			return model.Team{}, err
+		}
+	}
+
+	_, err = s.repo.UpsertTeamMember(context.Background(), model.TeamMember{
+		TeamID:    created.ID,
+		UserID:    currentUserID,
+		RoleKey:   "owner",
+		JoinedAt:  now,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		return model.Team{}, err
+	}
+	if err := s.repo.EnsureUserTeamMembership(context.Background(), currentUserID, created.ID); err != nil {
+		return model.Team{}, err
+	}
+
+	return created, nil
+}
+
+func (s *userService) ListMyTeams(currentUserID string) ([]model.Team, error) {
+	currentUserID = strings.TrimSpace(currentUserID)
+	if currentUserID == "" {
+		return nil, ErrUnauthorized
+	}
+	return s.repo.ListTeamsByUserID(context.Background(), currentUserID)
+}
+
+func (s *userService) DeleteTeam(currentUserID, teamID string) error {
+	currentUserID = strings.TrimSpace(currentUserID)
+	teamID = strings.TrimSpace(teamID)
+	if currentUserID == "" || teamID == "" {
+		return ErrBadRequest
+	}
+	team, err := s.repo.FindTeamByID(context.Background(), teamID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(team.CreatedBy) != currentUserID {
+		return ErrForbidden
+	}
+	return s.repo.DeleteTeam(context.Background(), teamID)
+}
+
+func (s *userService) CreateTeamRole(currentUserID, teamID, key, name string, permissions []string) (model.TeamRole, error) {
+	if err := s.requireTeamAdmin(currentUserID, teamID); err != nil {
+		return model.TeamRole{}, err
+	}
+	key = normalizeRoleKey(key)
+	name = strings.TrimSpace(name)
+	if key == "" || name == "" {
+		return model.TeamRole{}, ErrBadRequest
+	}
+	for _, reserved := range []string{"owner", "admin", "member"} {
+		if key == reserved {
+			return model.TeamRole{}, ErrBadRequest
+		}
+	}
+	now := time.Now().UTC()
+	role := model.TeamRole{
+		TeamID:      strings.TrimSpace(teamID),
+		Key:         key,
+		Name:        name,
+		Permissions: normalizePermissions(permissions),
+		System:      false,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	return s.repo.CreateTeamRole(context.Background(), role)
+}
+
+func (s *userService) ListTeamRoles(currentUserID, teamID string) ([]model.TeamRole, error) {
+	if err := s.requireTeamMembership(currentUserID, teamID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListTeamRoles(context.Background(), strings.TrimSpace(teamID))
+}
+
+func (s *userService) InviteToTeam(currentUserID, teamID, email, roleKey string, ttlHours int) (model.TeamInvite, string, error) {
+	if err := s.requireTeamAdmin(currentUserID, teamID); err != nil {
+		return model.TeamInvite{}, "", err
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if _, err := mail.ParseAddress(email); err != nil {
+		return model.TeamInvite{}, "", ErrBadRequest
+	}
+	roleKey = normalizeRoleKey(roleKey)
+	if roleKey == "" {
+		roleKey = "member"
+	}
+	if _, err := s.repo.FindTeamRole(context.Background(), strings.TrimSpace(teamID), roleKey); err != nil {
+		return model.TeamInvite{}, "", ErrBadRequest
+	}
+	if ttlHours <= 0 || ttlHours > 24*30 {
+		ttlHours = 72
+	}
+
+	now := time.Now().UTC()
+	token := randomToken()
+	invite := model.TeamInvite{
+		ID:        newID(),
+		TeamID:    strings.TrimSpace(teamID),
+		Email:     email,
+		RoleKey:   roleKey,
+		Status:    "pending",
+		InvitedBy: strings.TrimSpace(currentUserID),
+		ExpiresAt: now.Add(time.Duration(ttlHours) * time.Hour),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	created, err := s.repo.CreateTeamInvite(context.Background(), invite, hashToken(token))
+	if err != nil {
+		return model.TeamInvite{}, "", err
+	}
+	return created, token, nil
+}
+
+func (s *userService) AcceptTeamInvite(currentUserID, token string) (model.TeamMember, error) {
+	currentUserID = strings.TrimSpace(currentUserID)
+	token = strings.TrimSpace(token)
+	if currentUserID == "" || token == "" {
+		return model.TeamMember{}, ErrBadRequest
+	}
+
+	invite, err := s.repo.FindPendingInviteByTokenHash(context.Background(), hashToken(token))
+	if err != nil {
+		return model.TeamMember{}, ErrUnauthorized
+	}
+	if invite.Status != "pending" || time.Now().UTC().After(invite.ExpiresAt) {
+		return model.TeamMember{}, ErrUnauthorized
+	}
+
+	user, err := s.repo.FindByID(currentUserID)
+	if err != nil {
+		return model.TeamMember{}, ErrUnauthorized
+	}
+	if !strings.EqualFold(strings.TrimSpace(user.Email), strings.TrimSpace(invite.Email)) {
+		return model.TeamMember{}, ErrForbidden
+	}
+
+	now := time.Now().UTC()
+	member := model.TeamMember{
+		TeamID:    invite.TeamID,
+		UserID:    currentUserID,
+		RoleKey:   invite.RoleKey,
+		InvitedBy: invite.InvitedBy,
+		JoinedAt:  now,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	result, err := s.repo.UpsertTeamMember(context.Background(), member)
+	if err != nil {
+		return model.TeamMember{}, err
+	}
+	if err := s.repo.MarkInviteAccepted(context.Background(), invite.ID, currentUserID); err != nil {
+		return model.TeamMember{}, err
+	}
+	if err := s.repo.EnsureUserTeamMembership(context.Background(), currentUserID, invite.TeamID); err != nil {
+		return model.TeamMember{}, err
+	}
+	return result, nil
+}
+
+func (s *userService) ListMyPendingInvites(currentUserID string) ([]model.TeamInvite, error) {
+	currentUserID = strings.TrimSpace(currentUserID)
+	if currentUserID == "" {
+		return nil, ErrUnauthorized
+	}
+	user, err := s.repo.FindByID(currentUserID)
+	if err != nil {
+		return nil, ErrUnauthorized
+	}
+	return s.repo.ListPendingInvitesByEmail(context.Background(), user.Email)
+}
+
+func (s *userService) AcceptTeamInviteByID(currentUserID, inviteID string) (model.TeamMember, error) {
+	currentUserID = strings.TrimSpace(currentUserID)
+	inviteID = strings.TrimSpace(inviteID)
+	if currentUserID == "" || inviteID == "" {
+		return model.TeamMember{}, ErrBadRequest
+	}
+
+	user, err := s.repo.FindByID(currentUserID)
+	if err != nil {
+		return model.TeamMember{}, ErrUnauthorized
+	}
+
+	invite, err := s.repo.FindTeamInviteByID(context.Background(), inviteID)
+	if err != nil {
+		return model.TeamMember{}, ErrUnauthorized
+	}
+	if invite.Status != "pending" || time.Now().UTC().After(invite.ExpiresAt) {
+		return model.TeamMember{}, ErrUnauthorized
+	}
+	if !strings.EqualFold(strings.TrimSpace(user.Email), strings.TrimSpace(invite.Email)) {
+		return model.TeamMember{}, ErrForbidden
+	}
+
+	now := time.Now().UTC()
+	member := model.TeamMember{
+		TeamID:    invite.TeamID,
+		UserID:    currentUserID,
+		RoleKey:   invite.RoleKey,
+		InvitedBy: invite.InvitedBy,
+		JoinedAt:  now,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	result, err := s.repo.UpsertTeamMember(context.Background(), member)
+	if err != nil {
+		return model.TeamMember{}, err
+	}
+	if err := s.repo.MarkInviteAccepted(context.Background(), invite.ID, currentUserID); err != nil {
+		return model.TeamMember{}, err
+	}
+	if err := s.repo.EnsureUserTeamMembership(context.Background(), currentUserID, invite.TeamID); err != nil {
+		return model.TeamMember{}, err
+	}
+	return result, nil
+}
+
+func (s *userService) ListTeamMembers(currentUserID, teamID string) ([]model.TeamMember, error) {
+	if err := s.requireTeamMembership(currentUserID, teamID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListTeamMembers(context.Background(), strings.TrimSpace(teamID))
+}
+
+func (s *userService) UpdateTeamMemberRole(currentUserID, teamID, memberUserID, roleKey string) (model.TeamMember, error) {
+	if err := s.requireTeamAdmin(currentUserID, teamID); err != nil {
+		return model.TeamMember{}, err
+	}
+	roleKey = normalizeRoleKey(roleKey)
+	if roleKey == "" {
+		return model.TeamMember{}, ErrBadRequest
+	}
+	if _, err := s.repo.FindTeamRole(context.Background(), strings.TrimSpace(teamID), roleKey); err != nil {
+		return model.TeamMember{}, ErrBadRequest
+	}
+	member, err := s.repo.FindTeamMember(context.Background(), strings.TrimSpace(teamID), strings.TrimSpace(memberUserID))
+	if err != nil {
+		return model.TeamMember{}, err
+	}
+	if member.RoleKey == "owner" && roleKey != "owner" {
+		return model.TeamMember{}, ErrForbidden
+	}
+	member.RoleKey = roleKey
+	member.UpdatedAt = time.Now().UTC()
+	return s.repo.UpsertTeamMember(context.Background(), member)
+}
+
+func (s *userService) CreateProject(currentUserID, teamID, name string) (model.Project, error) {
+	if err := s.requireTeamAdmin(currentUserID, teamID); err != nil {
+		return model.Project{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return model.Project{}, ErrBadRequest
+	}
+	now := time.Now().UTC()
+	project := model.Project{
+		ID:        newID(),
+		TeamID:    strings.TrimSpace(teamID),
+		Name:      name,
+		CreatedBy: strings.TrimSpace(currentUserID),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	created, err := s.repo.CreateProject(context.Background(), project)
+	if err != nil {
+		return model.Project{}, err
+	}
+	defaultRoles := []model.ProjectRole{
+		{ProjectID: created.ID, Key: "owner", Name: "Owner", Permissions: []string{"tasks.read", "tasks.write", "project.members.manage", "project.roles.manage"}, InheritTeamRoleKey: "owner", System: true, CreatedAt: now, UpdatedAt: now},
+		{ProjectID: created.ID, Key: "admin", Name: "Admin", Permissions: []string{"tasks.read", "tasks.write", "project.members.manage"}, InheritTeamRoleKey: "admin", System: true, CreatedAt: now, UpdatedAt: now},
+		{ProjectID: created.ID, Key: "member", Name: "Member", Permissions: []string{"tasks.read", "tasks.write"}, InheritTeamRoleKey: "member", System: true, CreatedAt: now, UpdatedAt: now},
+	}
+	for _, role := range defaultRoles {
+		if _, err := s.repo.CreateProjectRole(context.Background(), role); err != nil {
+			return model.Project{}, err
+		}
+	}
+	_, err = s.repo.UpsertProjectMember(context.Background(), model.ProjectMember{
+		ProjectID: created.ID,
+		UserID:    strings.TrimSpace(currentUserID),
+		RoleKey:   "owner",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		return model.Project{}, err
+	}
+	return created, nil
+}
+
+func (s *userService) ListTeamProjects(currentUserID, teamID string) ([]model.Project, error) {
+	if err := s.requireTeamMembership(currentUserID, teamID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListProjectsByTeamID(context.Background(), strings.TrimSpace(teamID))
+}
+
+func (s *userService) DeleteProject(currentUserID, teamID, projectID string) error {
+	if err := s.requireTeamAdmin(currentUserID, teamID); err != nil {
+		return err
+	}
+	project, err := s.repo.FindProjectByID(context.Background(), strings.TrimSpace(projectID))
+	if err != nil {
+		return err
+	}
+	if project.TeamID != strings.TrimSpace(teamID) {
+		return ErrForbidden
+	}
+	return s.repo.DeleteProject(context.Background(), project.ID)
+}
+
+func (s *userService) CreateProjectRole(currentUserID, teamID, projectID, key, name, inheritTeamRoleKey string, permissions []string) (model.ProjectRole, error) {
+	if err := s.requireTeamAdmin(currentUserID, teamID); err != nil {
+		return model.ProjectRole{}, err
+	}
+	project, err := s.repo.FindProjectByID(context.Background(), strings.TrimSpace(projectID))
+	if err != nil {
+		return model.ProjectRole{}, err
+	}
+	if project.TeamID != strings.TrimSpace(teamID) {
+		return model.ProjectRole{}, ErrForbidden
+	}
+
+	key = normalizeRoleKey(key)
+	name = strings.TrimSpace(name)
+	inheritTeamRoleKey = normalizeRoleKey(inheritTeamRoleKey)
+	if key == "" || name == "" {
+		return model.ProjectRole{}, ErrBadRequest
+	}
+	for _, reserved := range []string{"owner", "admin", "member"} {
+		if key == reserved {
+			return model.ProjectRole{}, ErrBadRequest
+		}
+	}
+	if inheritTeamRoleKey != "" {
+		if _, err := s.repo.FindTeamRole(context.Background(), strings.TrimSpace(teamID), inheritTeamRoleKey); err != nil {
+			return model.ProjectRole{}, ErrBadRequest
+		}
+	}
+	now := time.Now().UTC()
+	role := model.ProjectRole{
+		ProjectID:          project.ID,
+		Key:                key,
+		Name:               name,
+		Permissions:        normalizePermissions(permissions),
+		InheritTeamRoleKey: inheritTeamRoleKey,
+		System:             false,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+	return s.repo.CreateProjectRole(context.Background(), role)
+}
+
+func (s *userService) ListProjectRoles(currentUserID, teamID, projectID string) ([]model.ProjectRole, error) {
+	if err := s.requireTeamMembership(currentUserID, teamID); err != nil {
+		return nil, err
+	}
+	project, err := s.repo.FindProjectByID(context.Background(), strings.TrimSpace(projectID))
+	if err != nil {
+		return nil, err
+	}
+	if project.TeamID != strings.TrimSpace(teamID) {
+		return nil, ErrForbidden
+	}
+	return s.repo.ListProjectRoles(context.Background(), project.ID)
+}
+
+func (s *userService) AssignProjectMember(currentUserID, teamID, projectID, memberUserID, roleKey string) (model.ProjectMember, error) {
+	if err := s.requireTeamAdmin(currentUserID, teamID); err != nil {
+		return model.ProjectMember{}, err
+	}
+	project, err := s.repo.FindProjectByID(context.Background(), strings.TrimSpace(projectID))
+	if err != nil {
+		return model.ProjectMember{}, err
+	}
+	if project.TeamID != strings.TrimSpace(teamID) {
+		return model.ProjectMember{}, ErrForbidden
+	}
+	if err := s.requireTeamMembership(memberUserID, teamID); err != nil {
+		return model.ProjectMember{}, ErrBadRequest
+	}
+
+	roleKey = normalizeRoleKey(roleKey)
+	if roleKey != "" {
+		if _, err := s.repo.FindProjectRole(context.Background(), project.ID, roleKey); err != nil {
+			return model.ProjectMember{}, ErrBadRequest
+		}
+	}
+	now := time.Now().UTC()
+	member := model.ProjectMember{
+		ProjectID: project.ID,
+		UserID:    strings.TrimSpace(memberUserID),
+		RoleKey:   roleKey,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	return s.repo.UpsertProjectMember(context.Background(), member)
+}
+
+func (s *userService) ListProjectMembers(currentUserID, teamID, projectID string) ([]model.ProjectMember, error) {
+	if err := s.requireTeamMembership(currentUserID, teamID); err != nil {
+		return nil, err
+	}
+	project, err := s.repo.FindProjectByID(context.Background(), strings.TrimSpace(projectID))
+	if err != nil {
+		return nil, err
+	}
+	if project.TeamID != strings.TrimSpace(teamID) {
+		return nil, ErrForbidden
+	}
+	return s.repo.ListProjectMembers(context.Background(), project.ID)
+}
+
+func (s *userService) CheckProjectPermission(currentUserID, teamID, projectID, permission string) (model.PermissionCheckResult, error) {
+	permission = strings.ToLower(strings.TrimSpace(permission))
+	if permission == "" {
+		return model.PermissionCheckResult{}, ErrBadRequest
+	}
+	teamID = strings.TrimSpace(teamID)
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return model.PermissionCheckResult{}, ErrBadRequest
+	}
+
+	project, err := s.repo.FindProjectByID(context.Background(), projectID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return model.PermissionCheckResult{Allowed: false}, nil
+		}
+		return model.PermissionCheckResult{}, err
+	}
+	if teamID == "" || teamID != project.TeamID {
+		teamID = project.TeamID
+	}
+
+	teamMember, err := s.repo.FindTeamMember(context.Background(), teamID, strings.TrimSpace(currentUserID))
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return model.PermissionCheckResult{Allowed: false}, nil
+		}
+		return model.PermissionCheckResult{}, err
+	}
+
+	effectivePermissions := make([]string, 0)
+	matched := make([]string, 0)
+	teamRole, err := s.repo.FindTeamRole(context.Background(), teamID, teamMember.RoleKey)
+	if err == nil {
+		effectivePermissions = append(effectivePermissions, teamRole.Permissions...)
+	}
+
+	// Keep backward compatibility for existing teams where owner/admin roles
+	// were configured with projects.manage but without explicit tasks.* scopes.
+	teamNormalized := normalizePermissions(effectivePermissions)
+	for _, p := range teamNormalized {
+		if p == "projects.manage" {
+			effectivePermissions = append(effectivePermissions, "tasks.read", "tasks.write")
+			break
+		}
+	}
+
+	projectMember, err := s.repo.FindProjectMember(context.Background(), projectID, strings.TrimSpace(currentUserID))
+	if err != nil && !errors.Is(err, repository.ErrNotFound) {
+		return model.PermissionCheckResult{}, err
+	}
+
+	var projectRoleKey string
+	if err == nil && projectMember.RoleKey != "" {
+		projectRole, err := s.repo.FindProjectRole(context.Background(), projectID, projectMember.RoleKey)
+		if err == nil {
+			projectRoleKey = projectRole.Key
+			effectivePermissions = append(effectivePermissions, projectRole.Permissions...)
+			if projectRole.InheritTeamRoleKey != "" {
+				if inheritedRole, err := s.repo.FindTeamRole(context.Background(), teamID, projectRole.InheritTeamRoleKey); err == nil {
+					effectivePermissions = append(effectivePermissions, inheritedRole.Permissions...)
+				}
+			}
+		}
+	}
+
+	normalized := normalizePermissions(effectivePermissions)
+	allowed := false
+	for _, p := range normalized {
+		if p == permission {
+			allowed = true
+			matched = append(matched, p)
+		}
+	}
+
+	source := "team"
+	if projectRoleKey != "" {
+		source = "project"
+	}
+	return model.PermissionCheckResult{
+		Allowed:     allowed,
+		Source:      source,
+		TeamRoleKey: teamMember.RoleKey,
+		ProjectRole: projectRoleKey,
+		Matched:     matched,
+	}, nil
 }
 
 func (s *userService) GetByID(requestorRole, userID string) (model.User, error) {
@@ -169,6 +731,57 @@ func (s *userService) GetCurrentUser(currentUserID string) (model.User, error) {
 	return sanitizeUser(user), nil
 }
 
+func (s *userService) LookupUserByID(currentUserID, userID string) (model.User, error) {
+	currentUserID = strings.TrimSpace(currentUserID)
+	if currentUserID == "" {
+		return model.User{}, ErrUnauthorized
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return model.User{}, ErrBadRequest
+	}
+	user, err := s.repo.FindByID(userID)
+	if err != nil {
+		return model.User{}, repository.ErrNotFound
+	}
+	return sanitizeUser(user), nil
+}
+
+func (s *userService) LookupUserByTag(currentUserID, tag string) (model.User, error) {
+	currentUserID = strings.TrimSpace(currentUserID)
+	if currentUserID == "" {
+		return model.User{}, ErrUnauthorized
+	}
+	normalizedTag := normalizeUserTag(tag)
+	if normalizedTag == "" {
+		return model.User{}, ErrBadRequest
+	}
+	user, err := s.repo.FindByTag(normalizedTag)
+	if err != nil {
+		return model.User{}, repository.ErrNotFound
+	}
+	return sanitizeUser(user), nil
+}
+
+func (s *userService) LookupUserByEmail(currentUserID, email string) (model.User, error) {
+	currentUserID = strings.TrimSpace(currentUserID)
+	if currentUserID == "" {
+		return model.User{}, ErrUnauthorized
+	}
+	normalizedEmail := strings.ToLower(strings.TrimSpace(email))
+	if normalizedEmail == "" {
+		return model.User{}, ErrBadRequest
+	}
+	if _, err := mail.ParseAddress(normalizedEmail); err != nil {
+		return model.User{}, ErrBadRequest
+	}
+	user, err := s.repo.FindByEmail(normalizedEmail)
+	if err != nil {
+		return model.User{}, repository.ErrNotFound
+	}
+	return sanitizeUser(user), nil
+}
+
 func (s *userService) UpdateCurrentUser(currentUserID string, update ProfileUpdate) (model.User, error) {
 	user, err := s.repo.FindByID(currentUserID)
 	if err != nil {
@@ -178,6 +791,19 @@ func (s *userService) UpdateCurrentUser(currentUserID string, update ProfileUpda
 	updated := false
 	if update.Name != nil {
 		user.Name = strings.TrimSpace(*update.Name)
+		updated = true
+	}
+	if update.Tag != nil {
+		tag := strings.TrimSpace(*update.Tag)
+		if tag != "" {
+			normalizedTag := normalizeUserTag(tag)
+			if normalizedTag == "" {
+				return model.User{}, ErrBadRequest
+			}
+			user.Tag = normalizedTag
+		} else {
+			user.Tag = ""
+		}
 		updated = true
 	}
 	if update.Bio != nil {
@@ -389,6 +1015,23 @@ func sanitizeUser(user model.User) model.User {
 	return user
 }
 
+func normalizeUserTag(value string) string {
+	tag := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(value, "@")))
+	if tag == "" {
+		return ""
+	}
+	if len(tag) < 3 || len(tag) > 24 {
+		return ""
+	}
+	for _, r := range tag {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return ""
+	}
+	return tag
+}
+
 func isAdmin(role string) bool {
 	return role == string(model.RoleAdmin)
 }
@@ -522,7 +1165,12 @@ func validateHTTPURL(value string) error {
 }
 
 func (s *userService) issueTokenPair(user model.User) (model.TokenPair, error) {
-	access, refresh, expiresIn, err := s.tokens.NewTokenPair(user.ID, string(user.Role))
+	teamIDs, err := s.repo.ListTeamIDsByUserID(context.Background(), user.ID)
+	if err != nil {
+		return model.TokenPair{}, err
+	}
+
+	access, refresh, expiresIn, err := s.tokens.NewTokenPair(user.ID, string(user.Role), teamIDs)
 	if err != nil {
 		return model.TokenPair{}, err
 	}
@@ -545,4 +1193,70 @@ func hashToken(token string) string {
 
 func sha256Sum(value string) [32]byte {
 	return sha256.Sum256([]byte(value))
+}
+
+func normalizeRoleKey(value string) string {
+	v := strings.ToLower(strings.TrimSpace(value))
+	v = strings.ReplaceAll(v, " ", "_")
+	if len(v) > 64 {
+		v = v[:64]
+	}
+	return v
+}
+
+func normalizePermissions(items []string) []string {
+	if len(items) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(items))
+	result := make([]string, 0, len(items))
+	for _, raw := range items {
+		v := strings.ToLower(strings.TrimSpace(raw))
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		result = append(result, v)
+	}
+	return result
+}
+
+func (s *userService) requireTeamMembership(currentUserID, teamID string) error {
+	member, err := s.repo.FindTeamMember(context.Background(), strings.TrimSpace(teamID), strings.TrimSpace(currentUserID))
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return ErrForbidden
+		}
+		return err
+	}
+	if strings.TrimSpace(member.UserID) == "" {
+		return ErrForbidden
+	}
+	return nil
+}
+
+func (s *userService) requireTeamAdmin(currentUserID, teamID string) error {
+	member, err := s.repo.FindTeamMember(context.Background(), strings.TrimSpace(teamID), strings.TrimSpace(currentUserID))
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return ErrForbidden
+		}
+		return err
+	}
+	role := strings.ToLower(strings.TrimSpace(member.RoleKey))
+	if role != "owner" && role != "admin" {
+		return ErrForbidden
+	}
+	return nil
+}
+
+func randomToken() string {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return newID()
+	}
+	return base64.RawURLEncoding.EncodeToString(buf)
 }
