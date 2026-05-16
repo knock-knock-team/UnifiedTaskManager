@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { normalizeApiBase } from '../lib/api';
+import { reportClientEvent } from '../lib/observability';
 
 const MAX_RECONNECT_DELAY_MS = 30000;
 const BASE_RECONNECT_DELAY_MS = 1000;
@@ -86,6 +87,10 @@ export function useBoardSync({
 
       ws.onopen = () => {
         reconnectAttemptRef.current = 0;
+        reportClientEvent('client_ws_open', {
+          route: '/v1/boards/stream',
+          meta: { scope: 'board' }
+        });
         onConnectionChangeRef.current?.(true);
         ws.send(JSON.stringify({ type: 'presence.ping' }));
       };
@@ -99,8 +104,22 @@ export function useBoardSync({
         }
       };
 
-      ws.onclose = () => {
+      ws.onerror = (event) => {
+        reportClientEvent('client_ws_error', {
+          route: '/v1/boards/stream',
+          message: event?.message || 'Board WebSocket error',
+          meta: { scope: 'board' }
+        });
+      };
+
+      ws.onclose = (event) => {
         clearHeartbeat();
+        reportClientEvent('client_ws_close', {
+          route: '/v1/boards/stream',
+          status: event.code,
+          message: event.reason || '',
+          meta: { clean: String(event.wasClean), scope: 'board' }
+        });
         onConnectionChangeRef.current?.(false);
         if (disposed || !shouldRunRef.current) {
           return;

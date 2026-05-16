@@ -39,13 +39,16 @@
   background: var(--panel);
   color: var(--txt);
   cursor: pointer;
-  transition: border-color 0.15s ease, box-shadow 0.2s ease, transform 0.12s ease;
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--ease-standard);
   font: inherit;
 }
 
 .calls-hub-card:hover {
   border-color: rgba(126, 184, 255, 0.35);
-  box-shadow: var(--glow);
+  box-shadow: var(--shadow-md);
   transform: translateY(-1px);
 }
 

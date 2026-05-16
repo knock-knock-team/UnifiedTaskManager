@@ -142,7 +142,33 @@ export async function reorderColumns({
   return items;
 }
 
-export function applyBoardSnapshot(setTasks, setColumns, setPresenceUsers, event) {
+export async function reorderTasksInColumn({
+  taskApiBase,
+  accessToken,
+  teamId,
+  projectId,
+  columnId,
+  ids,
+  onTokenRefresh
+}) {
+  const { data } = await requestWithMeta(
+    taskApiBase,
+    accessToken,
+    `/v1/tasks?action=reorder&projectId=${encodeURIComponent(projectId)}`,
+    {
+      method: 'POST',
+      auth: true,
+      headers: { 'X-Team-Id': teamId },
+      body: { status: columnId, ids }
+    },
+    onTokenRefresh
+  );
+  const items = Array.isArray(data.items) ? data.items : [];
+  items.forEach((t) => rememberTask(t));
+  return items;
+}
+
+export function applyBoardSnapshot(setTasks, setColumns, event) {
   if (event.type !== 'board.snapshot') {
     return;
   }
@@ -153,9 +179,6 @@ export function applyBoardSnapshot(setTasks, setColumns, setPresenceUsers, event
   if (Array.isArray(event.columns)) {
     setColumns(event.columns);
     rememberColumns(event.columns);
-  }
-  if (Array.isArray(event.users)) {
-    setPresenceUsers(event.users);
   }
 }
 
@@ -193,6 +216,27 @@ export function applyBoardEventToTasks(setTasks, event, options = {}) {
       return;
     }
     setTasks((prev) => prev.filter((item) => item.id !== event.taskId));
+    return;
+  }
+
+  if (event.type === 'tasks.reordered' && Array.isArray(event.tasks) && event.tasks.length) {
+    event.tasks.forEach((t) => rememberTask(t));
+    if (event.actorId && event.actorId === currentUserId) {
+      return;
+    }
+    setTasks((prev) => {
+      const next = [...prev];
+      const idxById = new Map(next.map((t, i) => [t.id, i]));
+      let changed = false;
+      for (const t of event.tasks) {
+        const idx = idxById.get(t.id);
+        if (idx !== undefined) {
+          next[idx] = { ...next[idx], ...t };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
     return;
   }
 

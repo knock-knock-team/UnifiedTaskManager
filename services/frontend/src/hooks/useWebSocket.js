@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { reportClientEvent } from '../lib/observability';
 
 /**
  * Custom hook for WebSocket signaling
@@ -26,6 +27,7 @@ export function useWebSocket(url, handlers = {}) {
 
       wsRef.current.onopen = () => {
         console.log('[WebSocket] Connected');
+        reportClientEvent('client_ws_open', { route: url });
         reconnectAttempts.current = 0;
         reconnectDelay.current = 1000;
 
@@ -50,11 +52,21 @@ export function useWebSocket(url, handlers = {}) {
 
       wsRef.current.onerror = (error) => {
         console.error('[WebSocket] Error:', error);
+        reportClientEvent('client_ws_error', {
+          route: url,
+          message: error?.message || 'WebSocket error'
+        });
         handlersRef.current.onError?.(error);
       };
 
       wsRef.current.onclose = (event) => {
         console.log('[WebSocket] Disconnected');
+        reportClientEvent('client_ws_close', {
+          route: url,
+          status: event.code,
+          message: event.reason || '',
+          meta: { clean: String(event.wasClean) }
+        });
         handlersRef.current.onClose?.(event);
 
         if (!shouldRunRef.current) {
@@ -73,6 +85,10 @@ export function useWebSocket(url, handlers = {}) {
           console.log(
             `[WebSocket] Reconnecting (attempt ${reconnectAttempts.current}/${maxReconnectAttempts})...`
           );
+          reportClientEvent('client_ws_reconnect', {
+            route: url,
+            meta: { attempt: String(reconnectAttempts.current) }
+          });
           reconnectTimerRef.current = setTimeout(connect, reconnectDelay.current);
           reconnectDelay.current = Math.min(reconnectDelay.current * 2, 10000);
         }

@@ -80,26 +80,21 @@ export function useWebRTC(config = {}) {
     return peerConnection;
   }, [config, iceServers]);
 
-  // Get user media
+  // Get user media — не запрашиваем видео, пока пользователь явно не включит камеру
+  // (иначе индикатор камеры горит сразу после входа в комнату).
   const startLocalStream = useCallback(async (constraints = {}) => {
     try {
-      // Always request audio and video, but they can be disabled via enabled property
+      const wantAudioEnabled = !!constraints.audio;
+      const wantVideoEnabled = !!constraints.video;
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
-        video: { width: 1280, height: 720 }
+        video: wantVideoEnabled ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false
       });
 
-      // Disable tracks based on constraints
-      if (!constraints.audio) {
-        stream.getAudioTracks().forEach((track) => {
-          track.enabled = false;
-        });
-      }
-      if (!constraints.video) {
-        stream.getVideoTracks().forEach((track) => {
-          track.enabled = false;
-        });
-      }
+      stream.getAudioTracks().forEach((track) => {
+        track.enabled = wantAudioEnabled;
+      });
 
       localStreamRef.current = stream;
       setLocalStream(stream);
@@ -201,8 +196,35 @@ export function useWebRTC(config = {}) {
     }
   }, []);
 
-  // Close peer connection
+  // Close peer connection — останавливаем все локальные и принимаемые дорожки (камера гаснет).
   const close = useCallback(() => {
+    const pc = peerConnectionRef.current;
+
+    if (pc) {
+      try {
+        pc.getSenders().forEach((sender) => {
+          try {
+            sender.track?.stop();
+          } catch {
+            // ignore
+          }
+        });
+      } catch {
+        // ignore
+      }
+      try {
+        pc.getReceivers().forEach((receiver) => {
+          try {
+            receiver.track?.stop();
+          } catch {
+            // ignore
+          }
+        });
+      } catch {
+        // ignore
+      }
+    }
+
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
         try {
@@ -214,19 +236,12 @@ export function useWebRTC(config = {}) {
       localStreamRef.current = null;
     }
 
-    if (peerConnectionRef.current) {
+    if (pc) {
       try {
-        peerConnectionRef.current.getSenders().forEach((sender) => {
-          try {
-            sender.track?.stop();
-          } catch {
-            // ignore
-          }
-        });
+        pc.close();
       } catch {
         // ignore
       }
-      peerConnectionRef.current.close();
       peerConnectionRef.current = null;
     }
 
@@ -244,12 +259,74 @@ export function useWebRTC(config = {}) {
     }
   }, []);
 
-  // Toggle video
-  const toggleVideo = useCallback((enabled) => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getVideoTracks().forEach((track) => {
-        track.enabled = enabled;
-      });
+  // Toggle video: при первом включении запрашиваем только камеру; при выключении — stop() (гаснет индикатор).
+  const toggleVideo = useCallback(async (enabled) => {
+    const pc = peerConnectionRef.current;
+    if (!pc) return;
+
+    let stream = localStreamRef.current;
+    let vTrack = stream?.getVideoTracks()[0];
+
+    if (!stream) return;
+
+    if (enabled) {
+      if (!vTrack || vTrack.readyState === 'ended') {
+        const vs = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+        const newTrack = vs.getVideoTracks()[0];
+        stream.addTrack(newTrack);
+
+        const videoSender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+        if (videoSender) {
+          try {
+            await videoSender.replaceTrack(newTrack);
+          } catch {
+            pc.addTrack(newTrack, stream);
+          }
+        } else {
+          pc.addTrack(newTrack, stream);
+        }
+
+        const refreshed = new MediaStream(stream.getTracks());
+        localStreamRef.current = refreshed;
+        setLocalStream(refreshed);
+      } else {
+        vTrack.enabled = true;
+      }
+      return;
+    }
+
+    if (vTrack) {
+      try {
+        vTrack.stop();
+      } catch {
+        // ignore
+      }
+      try {
+        stream?.removeTrack(vTrack);
+      } catch {
+        // ignore
+      }
+      const sender = pc
+        .getSenders()
+        .find((s) => s.track === vTrack || (s.track && s.track.kind === 'video'));
+      if (sender) {
+        try {
+          await sender.replaceTrack(null);
+        } catch {
+          // ignore
+        }
+      }
+      if (stream && stream.getTracks().length > 0) {
+        const refreshed = new MediaStream(stream.getTracks());
+        localStreamRef.current = refreshed;
+        setLocalStream(refreshed);
+      } else if (stream) {
+        localStreamRef.current = stream;
+        setLocalStream(stream);
+      }
     }
   }, []);
 

@@ -1,12 +1,14 @@
-/* Video Call Styles */
+/* Видеозвонок — в том же языке токенов, что styles.css (--bg, --panel, --accent, …) */
 
 .video-call {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  background: var(--chrome-deep, #0a0a0a);
-  color: var(--txt, #f4f6f8);
-  font-family: var(--font-ui, 'Manrope', system-ui, sans-serif);
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: radial-gradient(ellipse 90% 70% at 50% -20%, rgba(126, 184, 255, 0.08), transparent 55%),
+    linear-gradient(180deg, var(--bg) 0%, var(--chrome-deep) 100%);
+  color: var(--txt);
+  font-family: var(--font-ui);
 }
 
 .video-container {
@@ -15,40 +17,44 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .participants-grid {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  grid-template-rows: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 8px;
-  padding: 8px;
-  background: #000;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  grid-auto-rows: minmax(180px, 1fr);
+  gap: var(--space-3, 12px);
+  padding: var(--space-3, 12px);
+  background: rgba(0, 0, 0, 0.2);
 }
 
 .participant-tile {
   position: relative;
-  background: #1a1a1a;
-  border-radius: 8px;
+  background: var(--panel);
+  border-radius: var(--radius-md);
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 200px;
+  border: 1px solid var(--line-soft);
+  box-shadow: var(--shadow-sm);
 }
 
 .participant-tile.local {
-  border: 2px solid var(--accent, #7eb8ff);
+  border-color: rgba(126, 184, 255, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(126, 184, 255, 0.12), var(--shadow-sm);
 }
 
 .participant-tile.remote {
-  border: 1px solid #333;
+  border-color: var(--line-soft);
 }
 
 .participant-tile.empty {
-  background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%);
-  opacity: 0.5;
+  opacity: 0.55;
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .video-track {
@@ -64,18 +70,21 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  background: #000;
 }
 
 .video-label {
   position: absolute;
-  bottom: 8px;
-  left: 8px;
-  background: rgba(0, 0, 0, 0.8);
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 12px;
+  bottom: 10px;
+  left: 10px;
+  background: rgba(6, 8, 12, 0.82);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
   white-space: nowrap;
-  color: #fff;
+  color: var(--txt);
+  border: 1px solid var(--line-soft);
 }
 
 .video-placeholder {
@@ -85,16 +94,17 @@
   justify-content: center;
   width: 100%;
   height: 100%;
-  background: linear-gradient(145deg, var(--chrome-mid, #1a1a1a) 0%, var(--chrome-low, #121212) 100%);
-  color: var(--muted, #999);
-  font-size: 15px;
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.08));
+  color: var(--muted);
+  font-size: 14px;
   text-align: center;
   padding: 20px;
   gap: 6px;
 }
 
 .video-placeholder-muted {
-  border: 1px dashed rgba(126, 184, 255, 0.35);
+  border-style: dashed;
+  border-color: rgba(126, 184, 255, 0.35);
 }
 
 .video-placeholder-hint {
@@ -102,268 +112,248 @@
   opacity: 0.85;
 }
 
-/* Call Info */
+/* Статус */
 
 .call-info {
-  padding: 0 20px;
-  height: 60px;
-  background: rgba(0, 0, 0, 0.9);
+  padding: 0 18px;
+  height: 56px;
+  background: var(--header-surface, var(--panel));
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-top: 1px solid #333;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .call-status {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 14px;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
 }
 
 .status-indicator {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  animation: pulse 2s infinite;
+  animation: call-pulse 2.2s infinite;
 }
 
-.status-indicator.new {
-  background: #ffd700;
+@keyframes call-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(94, 225, 173, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(94, 225, 173, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(94, 225, 173, 0);
+  }
 }
 
 .status-indicator.connecting {
-  background: #ffaa00;
+  background: #fbbf24;
+  animation-duration: 1.6s;
 }
 
 .status-indicator.connected {
-  background: #00ff00;
+  background: var(--ok, #5ee1ad);
+  animation: none;
 }
 
-.status-indicator.active {
-  background: #00ff00;
-}
-
-.status-indicator.failed {
-  background: #ff0000;
-}
-
+.status-indicator.failed,
 .status-indicator.disconnected {
-  background: #ff0000;
+  background: var(--err, #ff7a9a);
+  animation: none;
 }
 
 .status-indicator.closed {
-  background: #666;
+  background: var(--muted);
+  animation: none;
+}
+
+.status-indicator.new {
+  background: rgba(251, 191, 36, 0.95);
+}
+
+.status-indicator.checking {
+  background: rgba(126, 184, 255, 0.85);
 }
 
 .status-text {
-  font-weight: 500;
+  font-weight: 600;
   text-transform: uppercase;
-  font-size: 12px;
-  letter-spacing: 0.5px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
 }
 
 .duration {
   margin-left: auto;
-  font-size: 16px;
-  font-weight: bold;
-  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-ui);
+  color: var(--txt);
 }
 
 .participants-count {
-  background: var(--accent-dim, rgba(126, 184, 255, 0.2));
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 12px;
-  color: var(--accent-strong, #a8d4ff);
-  border: 1px solid rgba(126, 184, 255, 0.45);
+  background: var(--accent-dim);
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-strong);
+  border: 1px solid rgba(126, 184, 255, 0.35);
 }
 
-@keyframes pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7);
-  }
-  70% {
-    box-shadow: 0 0 0 6px rgba(0, 255, 0, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(0, 255, 0, 0);
-  }
-}
-
-/* Controls */
+/* Панель кнопок */
 
 .call-controls {
-  padding: 20px;
-  background: rgba(0, 0, 0, 0.95);
+  padding: 16px 18px calc(18px + env(safe-area-inset-bottom));
+  background: rgba(6, 8, 12, 0.92);
+  backdrop-filter: blur(10px);
   display: flex;
   justify-content: center;
-  gap: 20px;
-  border-top: 1px solid #333;
+  flex-wrap: wrap;
+  gap: 12px;
+  border-top: 1px solid var(--line-soft);
 }
 
 .control-btn {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  border: none;
-  font-size: 28px;
+  min-width: 52px;
+  height: 52px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft);
+  font-size: 20px;
   cursor: pointer;
-  transition: all 0.3s ease;
-  background: #4a4a4a;
-  color: #fff;
-  display: flex;
+  transition:
+    transform var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard),
+    background var(--duration-fast) var(--ease-standard);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--txt);
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-sm);
 }
 
 .control-btn:hover {
-  transform: scale(1.1);
-  background: #555;
+  transform: translateY(-1px);
+  border-color: rgba(126, 184, 255, 0.35);
+}
+
+.control-btn:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .control-btn.active {
-  background: #00aa00;
-}
-
-.control-btn.active:hover {
-  background: #00cc00;
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent));
+  color: var(--on-accent);
+  border-color: transparent;
 }
 
 .control-btn.inactive {
-  background: #aa0000;
-  opacity: 0.8;
-}
-
-.control-btn.inactive:hover {
-  background: #cc0000;
-  opacity: 1;
+  background: rgba(255, 122, 154, 0.12);
+  color: var(--txt);
+  border-color: rgba(255, 122, 154, 0.35);
 }
 
 .control-btn.end-call {
-  background: #cc0000;
-  width: 60px;
-  height: 60px;
-  font-size: 32px;
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+  min-width: 56px;
+  height: 56px;
+  font-size: 22px;
 }
 
 .control-btn.end-call:hover {
-  background: #ff0000;
-  box-shadow: 0 4px 16px rgba(255, 0, 0, 0.4);
+  background: rgba(239, 68, 68, 0.32);
 }
 
 .control-btn.info-btn {
-  width: auto;
-  border-radius: 4px;
-  padding: 0 12px;
-  font-size: 14px;
-  background: #1e7ceb;
-  white-space: nowrap;
+  min-width: auto;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--accent-dim);
+  color: var(--accent-strong);
 }
 
 .control-btn.info-btn:hover {
-  background: #2a88f5;
-  transform: scale(1.05);
+  background: rgba(126, 184, 255, 0.22);
 }
 
-/* Error Banner */
+/* Ошибки */
 
 .error-banner {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  background: #cc0000;
-  color: white;
-  padding: 16px;
+  background: color-mix(in srgb, var(--err, #ff7a9a) 88%, black);
+  color: #0a0f18;
+  padding: 14px 18px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   z-index: 1000;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-md);
 }
 
 .error-banner p {
   margin: 0;
   flex: 1;
+  font-size: 14px;
 }
 
 .error-banner button {
-  background: rgba(255, 255, 255, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  color: white;
-  padding: 6px 12px;
-  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.25);
+  border: 1px solid rgba(10, 15, 24, 0.25);
+  color: inherit;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  margin-left: 16px;
-  font-size: 14px;
-  transition: all 0.3s ease;
+  margin-left: 14px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.error-banner button:hover {
-  background: rgba(255, 255, 255, 0.3);
+html[data-theme='light'] .video-call {
+  background: radial-gradient(ellipse 85% 60% at 50% -15%, rgba(37, 99, 235, 0.08), transparent 50%),
+    linear-gradient(180deg, var(--bg) 0%, #eef2f7 100%);
 }
 
-/* Responsive */
+html[data-theme='light'] .participants-grid {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+html[data-theme='light'] .call-controls {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+html[data-theme='light'] .video-track video {
+  background: #0f172a;
+}
 
 @media (max-width: 768px) {
-  .video-wrapper.local {
-    width: 120px;
-    height: 160px;
-    bottom: 100px;
-    right: 10px;
+  .participant-tile {
+    min-height: 160px;
   }
 
   .call-controls {
-    gap: 12px;
-    padding: 16px;
+    gap: 10px;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
   }
 
   .control-btn {
-    width: 48px;
+    min-width: 48px;
     height: 48px;
-    font-size: 24px;
-  }
-
-  .control-btn.end-call {
-    width: 52px;
-    height: 52px;
-    font-size: 28px;
-  }
-
-  .video-label {
-    font-size: 10px;
-  }
-
-  .status-text {
-    font-size: 11px;
-  }
-
-  .duration {
-    font-size: 14px;
-  }
-}
-
-@media (max-width: 480px) {
-  .video-wrapper.local {
-    width: 100px;
-    height: 140px;
-    bottom: 90px;
-  }
-
-  .call-controls {
-    gap: 8px;
-  }
-
-  .control-btn {
-    width: 44px;
-    height: 44px;
-    font-size: 20px;
-  }
-
-  .call-info {
-    height: 50px;
-    padding: 0 12px;
+    font-size: 18px;
   }
 }

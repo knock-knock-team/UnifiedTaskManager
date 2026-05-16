@@ -1,3 +1,5 @@
+import { reportClientEvent } from './observability';
+
 export function normalizeApiBase(value) {
   const raw = String(value || '').trim();
   if (!raw) return '/api';
@@ -134,6 +136,8 @@ export class VersionConflictError extends Error {
 export async function requestWithMeta(apiBase, accessToken, path, options = {}, onTokenRefresh) {
   const { method = 'GET', body, auth = false, headers: extraHeaders = {}, ifMatch } = options;
   const headers = { 'Content-Type': 'application/json', ...extraHeaders };
+  const started = performance.now();
+  let didRetry = false;
 
   if (auth && accessToken) {
     headers.Authorization = `Bearer ${accessToken}`;
@@ -142,38 +146,57 @@ export async function requestWithMeta(apiBase, accessToken, path, options = {}, 
     headers['If-Match'] = ifMatch;
   }
 
-  let response = await fetch(`${apiBase}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined
-  });
+  let response;
+  try {
+    response = await fetch(`${apiBase}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined
+    });
 
-  // Handle 401 Unauthorized - try to refresh token
-  if (response.status === 401 && auth && onTokenRefresh) {
-    const refreshToken = storage.refreshToken;
-    if (refreshToken) {
-      try {
-        const newAccessToken = await refreshAccessToken(apiBase, refreshToken);
-        onTokenRefresh(newAccessToken);
+    // Handle 401 Unauthorized - try to refresh token
+    if (response.status === 401 && auth && onTokenRefresh) {
+      const refreshToken = storage.refreshToken;
+      if (refreshToken) {
+        try {
+          const newAccessToken = await refreshAccessToken(apiBase, refreshToken);
+          onTokenRefresh(newAccessToken);
 
-        // Retry request with new token
-        headers.Authorization = `Bearer ${newAccessToken}`;
-        response = await fetch(`${apiBase}${path}`, {
-          method,
-          headers,
-          body: body ? JSON.stringify(body) : undefined
-        });
-      } catch (err) {
-        // Refresh failed - user must login again
+          // Retry request with new token
+          headers.Authorization = `Bearer ${newAccessToken}`;
+          didRetry = true;
+          response = await fetch(`${apiBase}${path}`, {
+            method,
+            headers,
+            body: body ? JSON.stringify(body) : undefined
+          });
+        } catch (err) {
+          // Refresh failed - user must login again
+          storage.clearTokens();
+          onTokenRefresh(null);
+          throw new Error('Сессия истекла. Пожалуйста, авторизируйтесь снова.');
+        }
+      } else {
         storage.clearTokens();
-        onTokenRefresh(null);
         throw new Error('Сессия истекла. Пожалуйста, авторизируйтесь снова.');
       }
-    } else {
-      storage.clearTokens();
-      throw new Error('Сессия истекла. Пожалуйста, авторизируйтесь снова.');
     }
+  } catch (error) {
+    reportClientEvent('client_api_error', {
+      route: path,
+      message: error instanceof Error ? error.message : String(error),
+      durationMs: performance.now() - started,
+      meta: { method }
+    });
+    throw error;
   }
+
+  reportClientEvent('client_api_request', {
+    route: path,
+    status: response.status,
+    durationMs: performance.now() - started,
+    meta: { method, retried: String(didRetry) }
+  });
 
   let data = {};
   try {

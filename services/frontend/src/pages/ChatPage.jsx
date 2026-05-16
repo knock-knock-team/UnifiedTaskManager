@@ -378,11 +378,11 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
   };
 
   return (
-    <section className="single-page wide-page">
+    <section className="single-page wide-page chats-page">
       <article className="pane chat-layout">
         <aside className="chat-sidebar">
           <div className="chat-sidebar-header">
-            <p className="section-label">ЧАТЫ</p>
+            <p className="section-label">Чаты</p>
             <h3>Диалоги</h3>
           </div>
 
@@ -402,7 +402,7 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
           </form>
 
           <div className="chat-room-list">
-            {isLoadingRooms ? <p className="muted-caption">Загрузка чатов...</p> : rooms.map((room) => (
+            {isLoadingRooms ? <p className="muted-caption chat-sidebar-hint">Загрузка чатов...</p> : rooms.map((room) => (
               <button
                 key={room.id}
                 type="button"
@@ -413,14 +413,14 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
                 <span>{new Date(room.updatedAt || room.createdAt).toLocaleString()}</span>
               </button>
             ))}
-            {!isLoadingRooms && rooms.length === 0 && <p className="muted-caption">Пока нет диалогов</p>}
+            {!isLoadingRooms && rooms.length === 0 && <p className="empty-state hub-view-empty chat-sidebar-hint">Пока нет диалогов — создайте личное сообщение по тегу или email.</p>}
           </div>
         </aside>
 
         <div className="chat-main">
           <header className="chat-main-header">
             <div>
-              <p className="section-label">ЛИЧНЫЕ СООБЩЕНИЯ</p>
+              <p className="section-label">Переписка</p>
               <h3>{resolveRoomTitle(selectedRoom || roomDetails)}</h3>
               <p className="muted-caption">Участников: {roomDetails?.participantIds?.length || 0}</p>
               {participantItems.length > 0 && (
@@ -463,9 +463,9 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
 
           <div className="chat-messages" ref={messagesContainerRef}>
             {isLoadingMessages ? (
-              <p className="empty-state">Загружаем сообщения...</p>
+              <p className="empty-state hub-view-empty">Загружаем сообщения…</p>
             ) : messages.length === 0 ? (
-              <p className="empty-state">Сообщений пока нет</p>
+              <p className="empty-state hub-view-empty">{selectedRoomId ? 'В этом чате пока нет сообщений.' : 'Выберите чат слева.'}</p>
             ) : messages.map((message) => {
               const isMine = message.senderUserId === profile?.id;
               const accent = senderAccent(message.senderUserId);

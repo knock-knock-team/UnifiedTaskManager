@@ -7,16 +7,42 @@ function escapeCsvCell(value) {
 }
 
 export function buildTasksCsv(tasks, columnTitleById) {
-  const headers = ['title', 'column', 'priority', 'dueAt', 'assigneeUserId', 'assigneeName', 'completed', 'description', 'id'];
+  const headers = [
+    'title',
+    'column',
+    'priority',
+    'dueAt',
+    'tags',
+    'assignees',
+    'assigneeUserId',
+    'assigneeName',
+    'completed',
+    'description',
+    'id'
+  ];
   const rows = tasks.map((task) => {
     const status = String(task.status || '').trim();
     const column = columnTitleById.get(status) || status || '';
     const completed = task.completedAt ? 'yes' : 'no';
+    const tagStr = Array.isArray(task.tags) ? task.tags.join('; ') : '';
+    let assigneesStr = '';
+    if (Array.isArray(task.assignees) && task.assignees.length) {
+      assigneesStr = task.assignees
+        .map((a) => {
+          const id = String(a?.userId || '').trim();
+          const n = String(a?.displayName || '').trim();
+          return n ? `${n} (${id})` : id;
+        })
+        .filter(Boolean)
+        .join('; ');
+    }
     return [
       escapeCsvCell(task.title),
       escapeCsvCell(column),
       escapeCsvCell(task.priority),
       escapeCsvCell(task.dueAt || ''),
+      escapeCsvCell(tagStr),
+      escapeCsvCell(assigneesStr),
       escapeCsvCell(task.assigneeUserId || ''),
       escapeCsvCell(task.assigneeName || ''),
       escapeCsvCell(completed),

@@ -472,19 +472,19 @@ export function FileEnvironments({ apiBase, accessToken, onUpdateAccessToken, sh
   }
 
   return (
-    <section className="single-page wide-page">
+    <section className="single-page wide-page files-hub-page">
       <article className="pane">
-        <p className="section-label">FILE SERVICE</p>
+        <p className="section-label">Файловый сервис</p>
         <h2>Файлы команды и проекта</h2>
         <p className="muted-caption">Среда создается автоматически для пары команда + проект. Квота: 100MB на команду.</p>
 
         <div className="section-block">
-          <article className="pane">
-            <p className="section-label">ФАЙЛОВЫЕ СРЕДЫ</p>
+          <article className="pane file-env-picker-pane">
+            <p className="section-label">Файловые среды</p>
             {isLoadingEnvironments ? (
-              <p className="muted-caption">Загружаем команды и проекты...</p>
+              <p className="muted-caption">Загружаем команды и проекты…</p>
             ) : environments.length === 0 ? (
-              <p className="muted-caption">Сейчас нет доступных команд или проектов. Когда они появятся, файловые среды создадутся автоматически.</p>
+              <p className="empty-state hub-view-empty">Нет доступных команд или проектов. После создания проекта файловые среды подключатся автоматически.</p>
             ) : (
               <div className="file-env-grid">
                 {environments.map((item) => (
@@ -523,7 +523,7 @@ export function FileEnvironments({ apiBase, accessToken, onUpdateAccessToken, sh
 
         <div className="section-block">
           <article className="pane file-controls-pane">
-            <p className="section-label">ДЕЙСТВИЯ</p>
+            <p className="section-label">Действия</p>
             <div className="file-controls-grid">
               <input value={newFolderPath} onChange={(event) => setNewFolderPath(event.target.value)} placeholder="Новая папка (например docs/new-folder)" />
               <label className="file-select-label">
@@ -574,12 +574,12 @@ export function FileEnvironments({ apiBase, accessToken, onUpdateAccessToken, sh
         </div>
 
         <div className="section-block">
-          <article className="pane">
-            <p className="section-label">СОДЕРЖИМОЕ</p>
+          <article className="pane file-contents-pane">
+            <p className="section-label">Содержимое</p>
             {!selectedEnvironment ? (
-              <p className="muted-caption">Выберите среду из списка</p>
+              <p className="empty-state hub-view-empty">Выберите среду в блоке выше.</p>
             ) : fileTreeNodes.length === 0 ? (
-              <p className="muted-caption">Пока пусто</p>
+              <p className="empty-state hub-view-empty">Здесь пока пусто. Создайте папку или загрузите файл.</p>
             ) : (
               <div className="file-entry-list file-tree-list">
                 {fileTreeNodes.map((node) => renderTreeNode(node))}

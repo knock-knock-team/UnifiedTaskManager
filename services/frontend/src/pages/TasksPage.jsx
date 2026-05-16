@@ -8,7 +8,8 @@ import {
   applyBoardEventToTasks,
   applyBoardSnapshot,
   patchTask,
-  reorderColumns
+  reorderColumns,
+  reorderTasksInColumn
 } from '../lib/tasksBoardApi';
 import { useBoardSync } from '../hooks/useBoardSync';
 import { BoardPresence } from '../components/BoardPresence';
@@ -19,12 +20,19 @@ import {
   BASIC_TEAM_PERMISSION_KEYS,
   PROJECT_PERMISSION_OPTIONS,
   TEAM_PERMISSION_OPTIONS,
-  groupTasksByStatus,
   priorityLabel,
   statusLabel
 } from '../lib/tasks';
 import { buildTasksCsv, buildTasksJson, downloadBlob } from '../lib/taskExport';
 import { TaskMindMapPanel } from '../components/TaskMindMapPanel';
+import {
+  buildAssigneesPayload,
+  formatAssigneesDisplay,
+  hasTaskAssignees,
+  parseTagsInput,
+  tagsInputFromTask,
+  taskAssigneesList
+} from '../lib/taskAssignees';
 
 export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNotification, onUpdateAccessToken }) {
   const navigate = useNavigate();
@@ -43,7 +51,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     priority: 'medium',
     dueAt: '',
     columnId: '',
-    assigneeUserId: ''
+    assigneeUserIds: [],
+    tags: ''
   });
   const [editorTask, setEditorTask] = useState(null);
   const [editorTaskForm, setEditorTaskForm] = useState({
@@ -52,7 +61,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     priority: 'medium',
     dueAt: '',
     columnId: '',
-    assigneeUserId: ''
+    assigneeUserIds: [],
+    tags: ''
   });
   const [pendingInvites, setPendingInvites] = useState([]);
   const [inviteEmail, setInviteEmail] = useState('');
@@ -102,6 +112,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [dragOverColumnId, setDragOverColumnId] = useState('');
   const [columnDropPosition, setColumnDropPosition] = useState('before');
   const [dragOverTaskColumnId, setDragOverTaskColumnId] = useState('');
+  const [dragOverTaskId, setDragOverTaskId] = useState('');
+  const [taskDropPosition, setTaskDropPosition] = useState('before');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterColumnIds, setFilterColumnIds] = useState(new Set());
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -110,7 +122,6 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [selectedMemberStatsUserId, setSelectedMemberStatsUserId] = useState('');
   const [openTaskMenuTaskId, setOpenTaskMenuTaskId] = useState('');
   const [taskBoardView, setTaskBoardView] = useState(() => localStorage.getItem('taskBoardView') || 'board');
-  const [presenceUsers, setPresenceUsers] = useState([]);
   const [boardConnected, setBoardConnected] = useState(false);
   const [taskConflict, setTaskConflict] = useState(null);
   const editorBaseTaskRef = useRef(null);
@@ -306,7 +317,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       result = result.filter((task) => {
         const titleMatch = (task.title || '').toLowerCase().includes(query);
         const descriptionMatch = (task.description || '').toLowerCase().includes(query);
-        return titleMatch || descriptionMatch;
+        const tagMatch = Array.isArray(task.tags) && task.tags.some((tag) => (tag || '').toLowerCase().includes(query));
+        const assigneeMatch = taskAssigneesList(task).some((a) => {
+          const label = (a.displayName || assigneeLabelById.get(a.userId) || a.userId || '').toLowerCase();
+          return label.includes(query);
+        });
+        return titleMatch || descriptionMatch || tagMatch || assigneeMatch;
       });
     }
     
@@ -319,7 +335,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
     
     return result;
-  }, [tasks, searchQuery, filterColumnIds]);
+  }, [assigneeLabelById, tasks, searchQuery, filterColumnIds]);
 
   const tasksByColumn = useMemo(() => {
     const map = {};
@@ -334,6 +350,17 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       }
       map[status].push(task);
     }
+    const sortInColumn = (a, b) => {
+      const pa = Number(a.sortPosition ?? 0);
+      const pb = Number(b.sortPosition ?? 0);
+      if (pa !== pb) return pa - pb;
+      const da = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const db = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return db - da;
+    };
+    Object.keys(map).forEach((key) => {
+      map[key].sort(sortInColumn);
+    });
     return map;
   }, [boardColumns, filteredTasks]);
 
@@ -460,26 +487,30 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     });
 
     tasks.forEach((task) => {
-      const assigneeUserId = String(task?.assigneeUserId || '').trim();
-      if (!assigneeUserId) return;
-      const member = ensureMember(
-        assigneeUserId,
-        task.assigneeName || assigneeLabelById.get(assigneeUserId) || assigneeUserId
-      );
-      if (!member) return;
-      member.assignedCount += 1;
-      if (isTaskDone(task)) {
-        member.completedCount += 1;
-        member.completedTasks.push(task);
-        return;
+      const assigneeRows = taskAssigneesList(task);
+      if (!assigneeRows.length) return;
+      for (const row of assigneeRows) {
+        const assigneeUserId = String(row.userId || '').trim();
+        if (!assigneeUserId) continue;
+        const member = ensureMember(
+          assigneeUserId,
+          row.displayName || task.assigneeName || assigneeLabelById.get(assigneeUserId) || assigneeUserId
+        );
+        if (!member) continue;
+        member.assignedCount += 1;
+        if (isTaskDone(task)) {
+          member.completedCount += 1;
+          member.completedTasks.push(task);
+          continue;
+        }
+        if (isTaskOverdue(task)) {
+          member.overdueCount += 1;
+          member.overdueTasks.push(task);
+          continue;
+        }
+        member.activeCount += 1;
+        member.activeTasks.push(task);
       }
-      if (isTaskOverdue(task)) {
-        member.overdueCount += 1;
-        member.overdueTasks.push(task);
-        return;
-      }
-      member.activeCount += 1;
-      member.activeTasks.push(task);
     });
 
     return Array.from(byUserId.values()).sort((left, right) => left.displayName.localeCompare(right.displayName));
@@ -509,7 +540,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       priority: 'medium',
       dueAt: '',
       columnId: nextColumnId || boardColumns[0]?.id || '',
-      assigneeUserId: ''
+      assigneeUserIds: [],
+      tags: ''
     });
     setTaskSuggestion(null);
   }, [boardColumns]);
@@ -522,7 +554,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       priority: 'medium',
       dueAt: '',
       columnId: '',
-      assigneeUserId: ''
+      assigneeUserIds: [],
+      tags: ''
     });
     setEditorTaskSuggestion(null);
     setTaskComments([]);
@@ -677,12 +710,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
 
   const handleBoardEvent = useCallback((event) => {
     if (!event?.type) return;
-    if (event.type === 'presence') {
-      setPresenceUsers(Array.isArray(event.users) ? event.users : []);
-      return;
-    }
     if (event.type === 'board.snapshot') {
-      applyBoardSnapshot(setTasks, setColumns, setPresenceUsers, event);
+      applyBoardSnapshot(setTasks, setColumns, event);
       return;
     }
     applyBoardEventToTasks(setTasks, event, {
@@ -703,7 +732,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
           priority: remoteTask.priority || 'medium',
           dueAt: formatDateTimeLocal(remoteTask.dueAt),
           columnId: String(remoteTask.status || '').trim(),
-          assigneeUserId: remoteTask.assigneeUserId || ''
+          assigneeUserIds: taskAssigneesList(remoteTask).map((a) => a.userId),
+          tags: tagsInputFromTask(remoteTask.tags)
         });
       }
     });
@@ -1208,6 +1238,29 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     setTaskForm((prev) => ({ ...prev, [field]: value }));
   };
 
+  const toggleTaskFormAssignee = (userId, checked) => {
+    const id = String(userId || '').trim();
+    if (!id) return;
+    setTaskForm((prev) => {
+      const next = new Set(prev.assigneeUserIds || []);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return { ...prev, assigneeUserIds: [...next] };
+    });
+  };
+
+  const toggleEditorTaskAssignee = (userId, checked) => {
+    editorDirtyRef.current = true;
+    const id = String(userId || '').trim();
+    if (!id) return;
+    setEditorTaskForm((prev) => {
+      const next = new Set(prev.assigneeUserIds || []);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return { ...prev, assigneeUserIds: [...next] };
+    });
+  };
+
   const hasThreeOrMoreWords = (text) => String(text || '')
     .trim()
     .split(/\s+/)
@@ -1322,7 +1375,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       priority: task.priority || 'medium',
       dueAt: formatDateTimeLocal(task.dueAt),
       columnId: String(task.status || '').trim(),
-      assigneeUserId: task.assigneeUserId || ''
+      assigneeUserIds: taskAssigneesList(task).map((a) => a.userId),
+      tags: tagsInputFromTask(task.tags)
     });
     setCommentDraft('');
     setTaskComments([]);
@@ -1382,13 +1436,19 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       return;
     }
 
+    const assigneesPayload = buildAssigneesPayload(taskForm.assigneeUserIds, assigneeLabelById);
+    const tagsPayload = parseTagsInput(taskForm.tags);
+    const primaryId = assigneesPayload[0]?.userId || '';
+
     const payload = {
       title,
       description: taskForm.description.trim(),
       status: taskForm.columnId,
       priority: taskForm.priority,
-      assigneeUserId: taskForm.assigneeUserId || '',
-      assigneeName: assigneeLabelById.get(taskForm.assigneeUserId || '') || ''
+      assignees: assigneesPayload,
+      tags: tagsPayload,
+      assigneeUserId: primaryId,
+      assigneeName: primaryId ? (assigneeLabelById.get(primaryId) || '') : ''
     };
     const dueAt = parseDateTimeLocal(taskForm.dueAt);
     if (dueAt) payload.dueAt = dueAt;
@@ -1428,13 +1488,19 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       showNotification('Введите название задачи', 'error');
       return;
     }
+    const assigneesPayload = buildAssigneesPayload(editorTaskForm.assigneeUserIds, assigneeLabelById);
+    const tagsPayload = parseTagsInput(editorTaskForm.tags);
+    const primaryId = assigneesPayload[0]?.userId || '';
+
     const payload = {
       title,
       description: editorTaskForm.description.trim(),
       status: editorTaskForm.columnId,
       priority: editorTaskForm.priority,
-      assigneeUserId: editorTaskForm.assigneeUserId || '',
-      assigneeName: assigneeLabelById.get(editorTaskForm.assigneeUserId || '') || ''
+      assignees: assigneesPayload,
+      tags: tagsPayload,
+      assigneeUserId: primaryId,
+      assigneeName: primaryId ? (assigneeLabelById.get(primaryId) || '') : ''
     };
     const dueAt = parseDateTimeLocal(editorTaskForm.dueAt);
     if (dueAt) payload.dueAt = dueAt;
@@ -1543,7 +1609,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       showNotification('У задачи нет дедлайна', 'error');
       return;
     }
-    if (!task.assigneeUserId) {
+    if (!hasTaskAssignees(task)) {
       showNotification('У задачи не назначен исполнитель', 'error');
       return;
     }
@@ -1603,20 +1669,6 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       showNotification(formatNotificationError(error, 'Не удалось сохранить настройки дедлайнов'), 'error');
     } finally {
       setIsSavingDeadlineSettings(false);
-    }
-  };
-
-  const handleMoveTask = async (task, targetColumnId) => {
-    if (!selectedTeamId || !selectedProjectId || !targetColumnId) return;
-    if (String(task.status || '').trim() === String(targetColumnId).trim()) return;
-    try {
-      const updated = await applyTaskPatch(task.id, task, { status: targetColumnId });
-      if (!updated) {
-        await loadTasks(selectedTeamId, selectedProjectId);
-      }
-    } catch (error) {
-      showNotification(error.message || 'Не удалось переместить задачу', 'error');
-      await loadTasks(selectedTeamId, selectedProjectId);
     }
   };
 
@@ -1786,6 +1838,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const onTaskDragEnd = () => {
     setDraggingTaskId('');
     setDragOverTaskColumnId('');
+    setDragOverTaskId('');
+    setTaskDropPosition('before');
   };
 
   const onTaskColumnDragOver = (event, targetColumnId) => {
@@ -1794,25 +1848,117 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     setDragOverTaskColumnId(targetColumnId);
   };
 
+  const onTaskCardDragOver = (event, columnId, taskId) => {
+    if (!draggingTaskId || draggingTaskId === taskId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const before = event.clientY < rect.top + rect.height / 2;
+    setDragOverTaskColumnId(columnId);
+    setDragOverTaskId(taskId);
+    setTaskDropPosition(before ? 'before' : 'after');
+  };
+
   const onTaskColumnDragLeave = (targetColumnId) => {
     if (dragOverTaskColumnId === targetColumnId) {
       setDragOverTaskColumnId('');
+      setDragOverTaskId('');
+      setTaskDropPosition('before');
     }
   };
 
   const onColumnDrop = async (event, targetColumnId) => {
     event.preventDefault();
-    setDragOverTaskColumnId('');
+    event.stopPropagation();
     const taskID = event.dataTransfer.getData('text/task-id');
-    if (!taskID) return;
+    if (!taskID || !selectedTeamId || !selectedProjectId) {
+      setDragOverTaskColumnId('');
+      setDragOverTaskId('');
+      setDraggingTaskId('');
+      return;
+    }
     const task = tasks.find((item) => item.id === taskID);
-    if (!task || task.status === targetColumnId) return;
-    await handleMoveTask(task, targetColumnId);
-    setDraggingTaskId('');
+    if (!task) {
+      setDragOverTaskColumnId('');
+      setDragOverTaskId('');
+      setDraggingTaskId('');
+      return;
+    }
+
+    const sourceCol = String(task.status || '').trim();
+    const columnItems = tasksByColumn[targetColumnId] || [];
+    const currentIds = columnItems.map((t) => t.id);
+    const baseIds = currentIds.filter((id) => id !== taskID);
+    let nextIds;
+
+    if (
+      dragOverTaskId &&
+      dragOverTaskId !== taskID &&
+      dragOverTaskColumnId === targetColumnId
+    ) {
+      let insertIndex = baseIds.indexOf(dragOverTaskId);
+      if (insertIndex < 0) {
+        nextIds = [...baseIds, taskID];
+      } else {
+        if (taskDropPosition === 'after') insertIndex += 1;
+        nextIds = [...baseIds.slice(0, insertIndex), taskID, ...baseIds.slice(insertIndex)];
+      }
+    } else {
+      nextIds = [...baseIds, taskID];
+    }
+
+    const sameOrder =
+      currentIds.length === nextIds.length &&
+      currentIds.every((id, idx) => id === nextIds[idx]);
+    if (sameOrder) {
+      setDragOverTaskColumnId('');
+      setDragOverTaskId('');
+      setDraggingTaskId('');
+      return;
+    }
+
+    const crossColumn = sourceCol !== targetColumnId;
+
+    try {
+      if (crossColumn) {
+        const updated = await applyTaskPatch(task.id, task, { status: targetColumnId });
+        if (!updated) {
+          await loadTasks(selectedTeamId, selectedProjectId);
+          setDragOverTaskColumnId('');
+          setDragOverTaskId('');
+          setDraggingTaskId('');
+          return;
+        }
+      }
+      const reordered = await reorderTasksInColumn({
+        taskApiBase,
+        accessToken,
+        teamId: selectedTeamId,
+        projectId: selectedProjectId,
+        columnId: targetColumnId,
+        ids: nextIds,
+        onTokenRefresh: onUpdateAccessToken
+      });
+      setTasks((prev) => {
+        const byId = new Map(prev.map((t) => [t.id, { ...t }]));
+        for (const u of reordered) {
+          const row = byId.get(u.id);
+          if (row) Object.assign(row, u);
+        }
+        return [...byId.values()];
+      });
+    } catch (error) {
+      showNotification(error.message || 'Не удалось изменить порядок задач', 'error');
+      await loadTasks(selectedTeamId, selectedProjectId);
+    } finally {
+      setDragOverTaskColumnId('');
+      setDragOverTaskId('');
+      setDraggingTaskId('');
+    }
   };
 
   return (
-    <section className="single-page wide-page tasks-page">
+    <section className="single-page wide-page tasks-page" lang="ru">
       <article className={`pane tasks-shell minimalist-board yougile-layout ${isSidebarOpen ? '' : 'sidebar-hidden'}`}>
         <aside className={`tasks-sidebar ${isSidebarOpen ? 'open' : 'collapsed'}`}>
           <div className="sidebar-title-row">
@@ -2052,7 +2198,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
             <summary>Добавить задачу</summary>
             <form className="task-form pane-inset minimalist-form sidebar-form" onSubmit={handleTaskSubmit}>
               <div className="task-form-grid task-form-grid-compact task-create-grid">
-                <label className="task-name-block" style={{ gridColumn: '1 / -1' }}>
+                <label className="task-name-block">
                   <span>Название</span>
                   <textarea
                     value={taskForm.title}
@@ -2060,12 +2206,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                     onInput={(event) => autoResizeTextarea(event.currentTarget, 200)}
                     placeholder="Новая задача"
                     rows={1}
-                    style={{ minHeight: '48px', maxHeight: '200px', resize: 'none', overflowY: 'auto' }}
+                    className="task-field-textarea-title"
                   />
                   {taskSuggestion?.title && taskSuggestion.title.trim() !== taskForm.title.trim() && (
-                    <div style={{ display: 'flex', gap: '10px', alignItems: 'stretch', marginTop: '10px', padding: '12px', borderRadius: '12px', background: 'rgba(34, 197, 94, 0.14)', border: '1px solid rgba(34, 197, 94, 0.35)' }}>
-                      <div style={{ flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{taskSuggestion.title}</div>
-                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <div className="task-ai-suggestion">
+                      <div className="task-ai-suggestion__body">{taskSuggestion.title}</div>
+                      <div className="task-ai-suggestion__actions">
                         <button type="button" className="ghost icon-btn" title="Заменить название" aria-label="Заменить название" onClick={() => applyTaskSuggestion('title')}>✓</button>
                         <button type="button" className="ghost icon-btn danger" title="Отклонить название" aria-label="Отклонить название" onClick={() => rejectTaskSuggestion('title')}>✕</button>
                       </div>
@@ -2099,14 +2245,34 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                   />
                 </label>
                 <label>
-                  <span>Исполнитель</span>
-                  <select className="assignee-select" value={taskForm.assigneeUserId} onChange={(event) => handleTaskChange('assigneeUserId', event.target.value)}>
-                    <option value="">Не назначен</option>
-                    {assigneeOptions.map((member) => <option key={member.userId} value={member.userId}>{member.displayName}</option>)}
-                  </select>
+                  <span>Теги</span>
+                  <input
+                    value={taskForm.tags}
+                    onChange={(event) => handleTaskChange('tags', event.target.value)}
+                    placeholder="через запятую: баг, спринт-2"
+                  />
                 </label>
-                <label className="task-description-field" style={{ gridColumn: '1 / -1' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+                <div className="assignee-multi-field">
+                  <span className="assignee-multi-label">Исполнители</span>
+                  {assigneeOptions.length === 0 ? (
+                    <p className="muted-caption compact">Участники появятся после добавления в команду или проект.</p>
+                  ) : (
+                    <div className="assignee-multi-list">
+                      {assigneeOptions.map((member) => (
+                        <label key={member.userId} className="assignee-multi-item">
+                          <input
+                            type="checkbox"
+                            checked={taskForm.assigneeUserIds.includes(member.userId)}
+                            onChange={(event) => toggleTaskFormAssignee(member.userId, event.target.checked)}
+                          />
+                          <span>{member.displayName}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <label className="task-description-field">
+                  <div className="task-label-row">
                     <span>Описание</span>
                     {hasThreeOrMoreWords(taskForm.description) && (
                       <button
@@ -2131,12 +2297,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                     onInput={(event) => autoResizeTextarea(event.currentTarget, 220)}
                     rows={3}
                     placeholder="Кратко и по делу"
-                    style={{ minHeight: '96px', maxHeight: '220px', resize: 'none', overflowY: 'auto' }}
+                    className="task-field-textarea-desc"
                   />
                   {taskSuggestion?.description && taskSuggestion.description.trim() !== taskForm.description.trim() && (
-                    <div style={{ display: 'flex', gap: '10px', alignItems: 'stretch', marginTop: '10px', padding: '12px', borderRadius: '12px', background: 'rgba(34, 197, 94, 0.14)', border: '1px solid rgba(34, 197, 94, 0.35)' }}>
-                      <div style={{ flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{taskSuggestion.description}</div>
-                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <div className="task-ai-suggestion">
+                      <div className="task-ai-suggestion__body">{taskSuggestion.description}</div>
+                      <div className="task-ai-suggestion__actions">
                         <button type="button" className="ghost icon-btn" title="Заменить описание" aria-label="Заменить описание" onClick={() => applyTaskSuggestion('description')}>✓</button>
                         <button type="button" className="ghost icon-btn danger" title="Отклонить описание" aria-label="Отклонить описание" onClick={() => rejectTaskSuggestion('description')}>✕</button>
                       </div>
@@ -2153,7 +2319,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         </aside>
 
         <div className="board-main">
-          <header className="tasks-pro-header board-topbar">
+          <header className="tasks-pro-header">
             <div className="tasks-pro-header-main">
               <p className="section-label">Рабочая область</p>
               <h2 className="tasks-pro-title">{activeProject?.name || activeProject?.title || 'Доска проекта'}</h2>
@@ -2166,7 +2332,9 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
               )}
             </div>
             <div className="tasks-pro-header-actions">
-              <BoardPresence users={presenceUsers} currentUserId={profile?.id || ''} connected={boardConnected} />
+              {selectedTeamId && selectedProjectId ? (
+                <BoardPresence connected={boardConnected} />
+              ) : null}
               <div className="view-segmented" role="tablist" aria-label="Представление задач">
                 {[
                   { id: 'board', label: 'Доска' },
@@ -2208,7 +2376,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
               type="search"
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Поиск по названию или описанию задачи"
+              placeholder="Поиск по названию, описанию, тегам или исполнителям"
               className="search-input"
               disabled={!selectedProjectId}
             />
@@ -2267,7 +2435,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
           {taskBoardView === 'board' && (
           <div className="task-board">
           {boardColumns.length === 0 ? (
-            <p className="empty-state">Создайте первую колонку, чтобы начать работу с задачами.</p>
+            <p className="empty-state tasks-view-empty">Создайте первую колонку, чтобы начать работу с задачами.</p>
           ) : boardColumns.map((column, index) => {
             const items = tasksByColumn[column.id] || [];
             const persistedIndex = columns.findIndex((item) => item.id === column.id);
@@ -2316,7 +2484,15 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                   onDrop={(event) => void onColumnDrop(event, column.id)}
                 >
                   {items.length === 0 ? <p className="empty-state">Пусто</p> : items.map((task) => (
-                    <article key={task.id} className={`task-card ${draggingTaskId === task.id ? 'dragging' : ''} ${isUrgentDeadline(task) ? 'urgent-deadline' : ''} ${isTaskDone(task) ? 'completed' : ''}`} draggable onDragStart={(event) => onTaskDragStart(event, task.id)} onDragEnd={onTaskDragEnd}>
+                    <article
+                      key={task.id}
+                      className={`task-card ${openTaskMenuTaskId === task.id ? 'task-card--menu-open' : ''} ${draggingTaskId === task.id ? 'dragging' : ''} ${isUrgentDeadline(task) ? 'urgent-deadline' : ''} ${isTaskDone(task) ? 'completed' : ''} ${draggingTaskId && dragOverTaskColumnId === column.id && dragOverTaskId === task.id && taskDropPosition === 'before' ? 'task-drag-insert-before' : ''} ${draggingTaskId && dragOverTaskColumnId === column.id && dragOverTaskId === task.id && taskDropPosition === 'after' ? 'task-drag-insert-after' : ''}`}
+                      draggable
+                      onDragStart={(event) => onTaskDragStart(event, task.id)}
+                      onDragEnd={onTaskDragEnd}
+                      onDragOver={(event) => onTaskCardDragOver(event, column.id, task.id)}
+                      onDrop={(event) => void onColumnDrop(event, column.id)}
+                    >
                       <div className="task-card-top">
                         <div className="task-card-title-row">
                           <button
@@ -2350,6 +2526,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                           ) : (
                             <strong
                               className="task-card-title"
+                              lang="ru"
                               onDoubleClick={() => handleInlineEditStart(task)}
                               title="Двойной клик для редактирования"
                               aria-label="Название задачи"
@@ -2359,7 +2536,11 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                           )}
                         </div>
                         <div className="task-card-top-meta">
-                          <span className="task-priority-badge">{priorityLabel(task.priority)}</span>
+                          <span
+                            className={`task-priority-badge priority-${String(task.priority || 'medium').toLowerCase()}`}
+                          >
+                            {priorityLabel(task.priority)}
+                          </span>
                           <div className="task-card-menu-shell">
                             <button
                               type="button"
@@ -2379,7 +2560,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                                     setOpenTaskMenuTaskId('');
                                     void handleSendDeadlineNotification(task);
                                   }}
-                                  disabled={!task.dueAt || !task.assigneeUserId || pendingNotificationTaskId === task.id || isTaskDone(task)}
+                                  disabled={!task.dueAt || !hasTaskAssignees(task) || pendingNotificationTaskId === task.id || isTaskDone(task)}
                                 >
                                   {pendingNotificationTaskId === task.id ? 'Отправляем...' : 'Напомнить о дедлайне'}
                                 </button>
@@ -2408,10 +2589,27 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                           </div>
                         </div>
                       </div>
+                      {Array.isArray(task.tags) && task.tags.length > 0 && (
+                        <div className="task-card-tags" aria-label="Теги">
+                          {task.tags.map((tag, idx) => (
+                            <span key={`${task.id}-${tag}-${idx}`} className="task-chip task-chip-tag">{tag}</span>
+                          ))}
+                        </div>
+                      )}
                       {task.description && <p>{task.description}</p>}
                       <div className="task-card-meta">
                         {task.dueAt ? <span>Срок: {new Date(task.dueAt).toLocaleString()}</span> : <span>Без срока</span>}
-                        {task.assigneeUserId ? <span>Исполнитель: {task.assigneeName || assigneeLabelById.get(task.assigneeUserId) || task.assigneeUserId}</span> : <span>Исполнитель: не назначен</span>}
+                        {hasTaskAssignees(task) ? (
+                          <span className="task-card-assignees-row">
+                            <span className="task-card-meta-kicker">Исп.</span>
+                            <span className="task-card-assignees">{formatAssigneesDisplay(task, assigneeLabelById) || '—'}</span>
+                          </span>
+                        ) : (
+                          <span className="task-card-assignees-row task-card-assignees-row--empty">
+                            <span className="task-card-meta-kicker">Исп.</span>
+                            <span className="task-card-assignees">—</span>
+                          </span>
+                        )}
                         {task.unreadComments > 0 && <span className="task-unread-pill">Новых сообщений: {task.unreadComments}</span>}
                       </div>
                     </article>
@@ -2425,9 +2623,9 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         {taskBoardView === 'list' && (
           <div className="task-list-view-wrap">
             {boardColumns.length === 0 ? (
-              <p className="empty-state">Создайте первую колонку, чтобы начать работу с задачами.</p>
+              <p className="empty-state tasks-view-empty">Создайте первую колонку, чтобы начать работу с задачами.</p>
             ) : listSortedTasks.length === 0 ? (
-              <p className="empty-state">Нет задач по текущим фильтрам.</p>
+              <p className="empty-state tasks-view-empty">Нет задач по текущим фильтрам.</p>
             ) : (
               <div className="task-table-scroll">
                 <table className="task-list-pro">
@@ -2437,8 +2635,9 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                       <th>Задача</th>
                       <th>Колонка</th>
                       <th>Приоритет</th>
+                      <th>Теги</th>
                       <th>Срок</th>
-                      <th>Исполнитель</th>
+                      <th>Исп.</th>
                       <th className="task-list-col-actions" aria-label="Действия" />
                     </tr>
                   </thead>
@@ -2462,13 +2661,24 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                             </button>
                           </td>
                           <td>
-                            <strong className="task-list-title">{task.title}</strong>
+                            <strong className="task-list-title" lang="ru">{task.title}</strong>
                             {task.description && <p className="task-list-desc">{task.description}</p>}
                           </td>
                           <td><span className="task-list-pill">{colTitle}</span></td>
-                          <td>{priorityLabel(task.priority)}</td>
+                          <td>
+                            <span className={`task-priority-badge sm priority-${String(task.priority || 'medium').toLowerCase()}`}>
+                              {priorityLabel(task.priority)}
+                            </span>
+                          </td>
+                          <td>
+                            {Array.isArray(task.tags) && task.tags.length
+                              ? (
+                                <span className="task-list-tags">{task.tags.join(', ')}</span>
+                              )
+                              : '—'}
+                          </td>
                           <td>{task.dueAt ? new Date(task.dueAt).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '—'}</td>
-                          <td>{task.assigneeUserId ? (assigneeLabelById.get(task.assigneeUserId) || task.assigneeName || task.assigneeUserId) : '—'}</td>
+                          <td className="task-list-assignees-cell">{formatAssigneesDisplay(task, assigneeLabelById) || '—'}</td>
                           <td>
                             <button type="button" className="ghost task-list-open" onClick={() => handleEditTask(task)}>Открыть</button>
                           </td>
@@ -2484,7 +2694,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         {taskBoardView === 'calendar' && (
           <div className="task-calendar-wrap">
             {boardColumns.length === 0 ? (
-              <p className="empty-state">Создайте колонки, чтобы назначать задачи.</p>
+              <p className="empty-state tasks-view-empty">Создайте колонки, чтобы назначать задачи.</p>
             ) : (
               <>
                 <div className="task-cal-nav">
@@ -2539,7 +2749,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         {taskBoardView === 'mindmap' && (
           <div className="task-mindmap-wrap">
             {boardColumns.length === 0 ? (
-              <p className="empty-state">Добавьте колонки — mind map построит схему проекта → колонки → задачи. Режим «Рисовать» — отдельный слой поверх (whiteboard).</p>
+              <p className="empty-state tasks-view-empty">Добавьте колонки — mind map построит схему проекта → колонки → задачи. Режим «Рисовать» — отдельный слой поверх (whiteboard).</p>
             ) : (
               <TaskMindMapPanel
                 storageKey={selectedTeamId && selectedProjectId ? `taskMindMap:${selectedTeamId}:${selectedProjectId}` : ''}
@@ -2700,7 +2910,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
               <div className="task-modal-body">
                 <form className="task-modal-form" onSubmit={handleEditorTaskSubmit}>
                   <div className="task-form-grid task-form-grid-compact task-edit-grid">
-                    <label className="task-name-block" style={{ gridColumn: '1 / -1' }}>
+                    <label className="task-name-block">
                       <span>Название</span>
                       <textarea
                         value={editorTaskForm.title}
@@ -2708,12 +2918,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                         onInput={(event) => autoResizeTextarea(event.currentTarget, 200)}
                         placeholder="Название задачи"
                         rows={1}
-                        style={{ minHeight: '48px', maxHeight: '200px', resize: 'none', overflowY: 'auto' }}
+                        className="task-field-textarea-title"
                       />
                       {editorTaskSuggestion?.title && editorTaskSuggestion.title.trim() !== editorTaskForm.title.trim() && (
-                        <div style={{ display: 'flex', gap: '10px', alignItems: 'stretch', marginTop: '10px', padding: '12px', borderRadius: '12px', background: 'rgba(34, 197, 94, 0.14)', border: '1px solid rgba(34, 197, 94, 0.35)' }}>
-                          <div style={{ flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{editorTaskSuggestion.title}</div>
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <div className="task-ai-suggestion">
+                          <div className="task-ai-suggestion__body">{editorTaskSuggestion.title}</div>
+                          <div className="task-ai-suggestion__actions">
                             <button type="button" className="ghost icon-btn" title="Заменить название" aria-label="Заменить название" onClick={() => applyTaskSuggestion('title', true)}>✓</button>
                             <button type="button" className="ghost icon-btn danger" title="Отклонить название" aria-label="Отклонить название" onClick={() => rejectTaskSuggestion('title', true)}>✕</button>
                           </div>
@@ -2747,14 +2957,34 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                       />
                     </label>
                     <label>
-                      <span>Исполнитель</span>
-                      <select className="assignee-select" value={editorTaskForm.assigneeUserId} onChange={(event) => handleEditorTaskChange('assigneeUserId', event.target.value)}>
-                        <option value="">Не назначен</option>
-                        {assigneeOptions.map((member) => <option key={member.userId} value={member.userId}>{member.displayName}</option>)}
-                      </select>
+                      <span>Теги</span>
+                      <input
+                        value={editorTaskForm.tags}
+                        onChange={(event) => handleEditorTaskChange('tags', event.target.value)}
+                        placeholder="через запятую"
+                      />
                     </label>
-                    <label className="task-description-field" style={{ gridColumn: '1 / -1' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+                    <div className="assignee-multi-field">
+                      <span className="assignee-multi-label">Исполнители</span>
+                      {assigneeOptions.length === 0 ? (
+                        <p className="muted-caption compact">Участники появятся после добавления в команду или проект.</p>
+                      ) : (
+                        <div className="assignee-multi-list">
+                          {assigneeOptions.map((member) => (
+                            <label key={`ed-${member.userId}`} className="assignee-multi-item">
+                              <input
+                                type="checkbox"
+                                checked={editorTaskForm.assigneeUserIds.includes(member.userId)}
+                                onChange={(event) => toggleEditorTaskAssignee(member.userId, event.target.checked)}
+                              />
+                              <span>{member.displayName}</span>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <label className="task-description-field">
+                      <div className="task-label-row">
                         <span>Описание</span>
                         {hasThreeOrMoreWords(editorTaskForm.description) && (
                           <button
@@ -2779,12 +3009,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                         onInput={(event) => autoResizeTextarea(event.currentTarget, 220)}
                         rows={4}
                         placeholder="Описание задачи"
-                        style={{ minHeight: '96px', maxHeight: '220px', resize: 'none', overflowY: 'auto' }}
+                        className="task-field-textarea-desc"
                       />
                       {editorTaskSuggestion?.description && editorTaskSuggestion.description.trim() !== editorTaskForm.description.trim() && (
-                        <div style={{ display: 'flex', gap: '10px', alignItems: 'stretch', marginTop: '10px', padding: '12px', borderRadius: '12px', background: 'rgba(34, 197, 94, 0.14)', border: '1px solid rgba(34, 197, 94, 0.35)' }}>
-                          <div style={{ flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{editorTaskSuggestion.description}</div>
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <div className="task-ai-suggestion">
+                          <div className="task-ai-suggestion__body">{editorTaskSuggestion.description}</div>
+                          <div className="task-ai-suggestion__actions">
                             <button type="button" className="ghost icon-btn" title="Заменить описание" aria-label="Заменить описание" onClick={() => applyTaskSuggestion('description', true)}>✓</button>
                             <button type="button" className="ghost icon-btn danger" title="Отклонить описание" aria-label="Отклонить описание" onClick={() => rejectTaskSuggestion('description', true)}>✕</button>
                           </div>

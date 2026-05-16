@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { CallHome, CallCreated, CallJoiner, FileEnvironments } from './components';
 import { request, storage } from './lib/api';
 import { ChatPage } from './pages/ChatPage';
@@ -193,28 +193,36 @@ function App() {
   }
 
   const navItems = [
-    { to: '/', label: 'ГЛАВНАЯ' },
-    ...(isAuthorized ? [{ to: '/tasks', label: 'ЗАДАЧИ' }, { to: '/chats', label: 'ЧАТЫ' }, { to: '/calls', label: 'ЗВОНКИ' }, { to: '/files', label: 'ФАЙЛЫ' }, { to: '/cabinet', label: 'ЛИЧНЫЙ КАБИНЕТ' }] : []),
-    ...(!isAuthorized ? [{ to: '/register', label: 'РЕГИСТРАЦИЯ' }, { to: '/login', label: 'ЛОГИН' }] : [])
+    { to: '/', label: 'Главная' },
+    ...(isAuthorized ? [{ to: '/tasks', label: 'Задачи' }, { to: '/chats', label: 'Чаты' }, { to: '/calls', label: 'Звонки' }, { to: '/files', label: 'Файлы' }, { to: '/cabinet', label: 'Кабинет' }] : []),
+    ...(!isAuthorized ? [{ to: '/register', label: 'Регистрация' }, { to: '/login', label: 'Вход' }] : [])
   ];
 
 
   return (
     <div className="app">
+      <a href="#main-content" className="skip-to-main">
+        К содержимому
+      </a>
       <header className="header-shell">
         <div className="header-inner">
-          <div className="nav-grid">
-            <div className="logo">UNIFIED TASK MANAGER</div>
-            {navItems.map((item) => (
-              <NavLink key={item.to} to={item.to} className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}>
-                {item.label}
-              </NavLink>
-            ))}
-          </div>
+          <nav className="nav-primary" aria-label="Основная навигация">
+            <Link to="/" className="nav-brand" aria-label="Unified Task Manager — на главную">
+              <span className="logo-mark" aria-hidden="true">UG</span>
+              <span className="nav-brand-name">Unified Task Manager</span>
+            </Link>
+            <div className="nav-links-cluster">
+              {navItems.map((item) => (
+                <NavLink key={item.to} to={item.to} end={item.to === '/'} className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}>
+                  {item.label}
+                </NavLink>
+              ))}
+            </div>
+          </nav>
         </div>
       </header>
 
-      <main className="container page-shell">
+      <main id="main-content" className="container page-shell" tabIndex={-1}>
         <Routes>
           <Route path="/" element={<HomePage isAuthorized={isAuthorized} />} />
           <Route path="/register" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <RegisterPage onRegister={onRegister} />} />

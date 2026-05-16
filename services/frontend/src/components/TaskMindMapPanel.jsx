@@ -143,11 +143,18 @@ export function TaskMindMapPanel({
     const h = contentSize.height;
     if (w < 16 || h < 16) return;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.floor(w * dpr);
-    canvas.height = Math.floor(h * dpr);
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
-    const ctx = canvas.getContext('2d');
+    const bw = Math.floor(w * dpr);
+    const bh = Math.floor(h * dpr);
+    // Не менять width/height на каждый move при рисовании — сброс буфера
+    // каждый кадр в Chromium может давать чёрный экран или «пропадающую» карту под канвасом.
+    const sizeChanged = canvas.width !== bw || canvas.height !== bh;
+    if (sizeChanged) {
+      canvas.width = bw;
+      canvas.height = bh;
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+    }
+    const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
@@ -319,6 +326,21 @@ export function TaskMindMapPanel({
     redrawCanvas();
   }, [redrawCanvas]);
 
+  const endCanvasStroke = useCallback(
+    (event) => {
+      event.stopPropagation();
+      finalizeStroke();
+      if (event.pointerId != null) {
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // ignore
+        }
+      }
+    },
+    [finalizeStroke]
+  );
+
   const clearDrawings = useCallback(() => {
     setStrokes([]);
     drawRef.current = null;
@@ -356,15 +378,8 @@ export function TaskMindMapPanel({
             className="mindmap-freehand"
             onPointerDown={onCanvasPointerDown}
             onPointerMove={onCanvasPointerMove}
-            onPointerUp={(e) => {
-              e.stopPropagation();
-              finalizeStroke();
-              try {
-                e.currentTarget.releasePointerCapture(e.pointerId);
-              } catch {
-                // ignore
-              }
-            }}
+            onPointerUp={endCanvasStroke}
+            onPointerCancel={endCanvasStroke}
           />
           <svg className="mindmap-edges" width={contentSize.width} height={contentSize.height} aria-hidden="true">
             {edges.map((e) => (

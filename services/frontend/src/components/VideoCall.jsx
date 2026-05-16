@@ -126,7 +126,8 @@ export function VideoCall({
   const { send: ws_send, close: wsClose } = useWebSocket(wsEndpoint, {
     onOpen: async () => {
       try {
-        // Start local stream with audio/video disabled by default
+        // Микрофон: только аудиопоток, дорожки выключены до явного «включить».
+        // Камера не запрашивается до нажатия кнопки — индикатор не горит.
         await startLocalStream({
           audio: false,
           video: false
@@ -163,7 +164,7 @@ export function VideoCall({
         setCallState('active');
       } catch (error) {
         console.error('Error starting call:', error);
-        setError('Не удаётся получить доступ к камере/микрофону');
+        setError('Не удаётся получить доступ к микрофону. Разрешите доступ в браузере или попробуйте другой браузер.');
       }
     },
     onMessage: async (message) => {
@@ -387,12 +388,28 @@ export function VideoCall({
     toggleAudio(newState);
   }, [isAudioEnabled, toggleAudio]);
 
-  // Handle video toggle
-  const handleToggleVideo = useCallback(() => {
-    const newState = !isVideoEnabled;
-    setIsVideoEnabled(newState);
-    toggleVideo(newState);
-  }, [isVideoEnabled, toggleVideo]);
+  // Handle video toggle (async: первый запуск камеры — отдельный getUserMedia)
+  const handleToggleVideo = useCallback(async () => {
+    const next = !isVideoEnabled;
+    try {
+      await toggleVideo(next);
+      setIsVideoEnabled(next);
+      try {
+        const pubOffer = await createOffer();
+        ws_send({
+          type: 'offer',
+          call_id: callId,
+          from: userId,
+          payload: { sdp: pubOffer.sdp, type: pubOffer.type }
+        });
+      } catch (e) {
+        console.warn('[Call] После изменения камеры не удалось отправить повторный offer:', e);
+      }
+    } catch (e) {
+      console.error(e);
+      showNotification?.('Не удалось получить доступ к камере или обновить соединение', 'error');
+    }
+  }, [isVideoEnabled, toggleVideo, createOffer, ws_send, callId, userId, showNotification]);
 
   // Handle copy meeting link
   const handleCopyLink = useCallback(() => {
@@ -443,7 +460,7 @@ export function VideoCall({
   };
 
   return (
-    <div className="video-call">
+    <div className="video-call" lang="ru">
       <div className="video-container">
         {/* Participants grid */}
         <div className="participants-grid">
@@ -472,7 +489,7 @@ export function VideoCall({
                 <RemoteVideo stream={participant.stream} userId={participant.id} />
               ) : (
                 <div className="video-placeholder">
-                  <span>Connecting to {participant.id.slice(0, 8)}...</span>
+                  <span>Подключение к {participant.id.slice(0, 8)}…</span>
                 </div>
               )}
             </div>
@@ -482,7 +499,7 @@ export function VideoCall({
           {Array.from({ length: Math.max(0, 4 - participants.length - 1) }, (_, i) => (
             <div key={`empty-${i}`} className="participant-tile empty">
               <div className="video-placeholder">
-                <span>Waiting for participants...</span>
+                <span>Место свободно</span>
               </div>
             </div>
           ))}
@@ -540,7 +557,7 @@ export function VideoCall({
       {error && (
         <div className="error-banner">
           <p>{error}</p>
-          <button onClick={() => setError(null)}>Dismiss</button>
+          <button type="button" onClick={() => setError(null)}>Закрыть</button>
         </div>
       )}
     </div>
@@ -558,13 +575,18 @@ function LocalVideo({ stream, userId }) {
     if (!el) return undefined;
     el.srcObject = stream || null;
     return () => {
+      try {
+        el.pause();
+      } catch {
+        // ignore
+      }
       el.srcObject = null;
     };
   }, [stream]);
 
   return (
     <div className="video-track">
-      <video ref={videoRef} autoPlay muted playsInline />
+      <video ref={videoRef} autoPlay playsInline muted />
       <div className="video-label">Вы ({userId.slice(0, 8)})</div>
     </div>
   );
@@ -581,6 +603,11 @@ function RemoteVideo({ stream, userId }) {
     if (!el) return undefined;
     el.srcObject = stream || null;
     return () => {
+      try {
+        el.pause();
+      } catch {
+        // ignore
+      }
       el.srcObject = null;
     };
   }, [stream]);
