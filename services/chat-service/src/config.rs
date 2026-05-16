@@ -3,7 +3,6 @@ use std::{env, net::SocketAddr};
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub http_addr: SocketAddr,
-
     pub database_url: String,
     pub rabbitmq_exchange: String,
     pub cors_allow_origin: String,

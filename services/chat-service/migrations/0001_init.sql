@@ -8,7 +8,6 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
 
 CREATE TABLE IF NOT EXISTS chat_room_members (
     room_id UUID NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
-
     user_id UUID NOT NULL,
     joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (room_id, user_id)

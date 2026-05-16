@@ -450,6 +450,7 @@ dependencies = [
  "axum",
  "chrono",
  "dotenvy",
+ "lapin",
  "mq-rust",
  "serde",
  "serde_json",
