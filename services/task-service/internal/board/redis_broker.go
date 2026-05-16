@@ -113,19 +113,7 @@ func (d *DistributedHub) TouchPresence(teamID, projectID, userID, userName strin
 }
 
 func (d *DistributedHub) SendSnapshot(client *Client, tasks []model.Task, columns []model.TaskColumn) {
-	users := d.Hub.presenceSnapshot(roomKey(client.TeamID, client.ProjectID))
-	payload, err := json.Marshal(Event{
-		Type:      "board.snapshot",
-		TeamID:    client.TeamID,
-		ProjectID: client.ProjectID,
-		Tasks:     tasks,
-		Columns:   columns,
-		Users:     users,
-	})
-	if err != nil {
-		return
-	}
-	d.Hub.sendToClient(client, payload)
+	d.Hub.SendSnapshot(client, tasks, columns)
 }
 
 func (d *DistributedHub) TaskCreated(actorID string, task model.Task) {
@@ -134,6 +122,10 @@ func (d *DistributedHub) TaskCreated(actorID string, task model.Task) {
 
 func (d *DistributedHub) TaskUpdated(actorID string, task model.Task) {
 	d.Publish(Event{Type: "task.updated", TeamID: task.TeamID, ProjectID: task.ProjectID, Task: task, ActorID: actorID})
+}
+
+func (d *DistributedHub) TasksReordered(actorID, teamID, projectID string, tasks []model.Task) {
+	d.Publish(Event{Type: "tasks.reordered", TeamID: teamID, ProjectID: projectID, Tasks: tasks, ActorID: actorID})
 }
 
 func (d *DistributedHub) TaskDeleted(actorID, teamID, projectID, taskID string) {

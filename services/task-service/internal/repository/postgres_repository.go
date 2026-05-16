@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -58,6 +59,10 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
 	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assignee_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NULL;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_by TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assignees_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tags_json TEXT NOT NULL DEFAULT '[]';
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sort_position INTEGER NOT NULL DEFAULT 0;
 
 UPDATE tasks
 SET completed_at = COALESCE(completed_at, updated_at, created_at, NOW())
@@ -104,13 +109,14 @@ CREATE TABLE IF NOT EXISTS task_comment_reads (
 
 func (r *PostgresTaskRepository) Create(task model.Task) (model.Task, error) {
 	const q = `
-INSERT INTO tasks (id, title, description, status, priority, due_at, completed_at, completed_by, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, version, deleted_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NULL)`
+INSERT INTO tasks (id, title, description, status, priority, due_at, completed_at, completed_by, created_by, assignee_user_id, assignee_name, assignees_json, tags_json, sort_position, team_id, project_id, created_at, updated_at, version, deleted_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NULL)`
 
 	version := task.Version
 	if version <= 0 {
 		version = 1
 	}
+	assigneesJSON, tagsJSON := marshalTaskExtras(task)
 	_, err := r.db.Exec(context.Background(), q,
 		task.ID,
 		task.Title,
@@ -123,6 +129,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, N
 		task.CreatedBy,
 		task.AssigneeUserID,
 		task.AssigneeName,
+		assigneesJSON,
+		tagsJSON,
+		task.SortPosition,
 		task.TeamID,
 		task.ProjectID,
 		task.CreatedAt,
@@ -137,7 +146,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, N
 
 func (r *PostgresTaskRepository) GetByID(id string) (model.Task, error) {
 	const q = `
-SELECT id, title, description, status, priority, due_at, completed_at, completed_by, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, version, deleted_at
+SELECT id, title, description, status, priority, due_at, completed_at, completed_by, created_by, assignee_user_id, assignee_name, assignees_json, tags_json, sort_position, team_id, project_id, created_at, updated_at, version, deleted_at
 FROM tasks
 WHERE id = $1 AND deleted_at IS NULL`
 
@@ -180,17 +189,22 @@ WHERE deleted_at IS NULL
   AND ($1 = '' OR created_by = $1)
 	AND ($2 = '' OR team_id = $2)
 	AND ($3 = '' OR project_id = $3)
-	AND (LOWER(title) LIKE $4 OR LOWER(description) LIKE $4)`
+	AND (LOWER(title) LIKE $4 OR LOWER(description) LIKE $4 OR LOWER(COALESCE(assignees_json,'')) LIKE $4 OR LOWER(COALESCE(tags_json,'')) LIKE $4)`
 
-	const listQ = `
-SELECT id, title, description, status, priority, due_at, completed_at, completed_by, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, version, deleted_at
+	orderClause := `ORDER BY created_at DESC`
+	if projectID != "" {
+		orderClause = `ORDER BY sort_position ASC, created_at DESC`
+	}
+
+	listQ := `
+SELECT id, title, description, status, priority, due_at, completed_at, completed_by, created_by, assignee_user_id, assignee_name, assignees_json, tags_json, sort_position, team_id, project_id, created_at, updated_at, version, deleted_at
 FROM tasks
 WHERE deleted_at IS NULL
   AND ($1 = '' OR created_by = $1)
 	AND ($2 = '' OR team_id = $2)
 	AND ($3 = '' OR project_id = $3)
-	AND (LOWER(title) LIKE $4 OR LOWER(description) LIKE $4)
-ORDER BY created_at DESC
+	AND (LOWER(title) LIKE $4 OR LOWER(description) LIKE $4 OR LOWER(COALESCE(assignees_json,'')) LIKE $4 OR LOWER(COALESCE(tags_json,'')) LIKE $4)
+` + orderClause + `
 LIMIT $5 OFFSET $6`
 
 	var total int
@@ -231,11 +245,15 @@ SET title = $2,
 	completed_by = $8,
 	assignee_user_id = $9,
 	assignee_name = $10,
-	updated_at = $11,
+	assignees_json = $11,
+	tags_json = $12,
+	sort_position = $13,
+	updated_at = $14,
 	version = version + 1
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING version`
 
+	assigneesJSON, tagsJSON := marshalTaskExtras(task)
 	var nextVersion int64
 	err := r.db.QueryRow(context.Background(), q,
 		task.ID,
@@ -248,6 +266,9 @@ RETURNING version`
 		task.CompletedBy,
 		task.AssigneeUserID,
 		task.AssigneeName,
+		assigneesJSON,
+		tagsJSON,
+		task.SortPosition,
 		task.UpdatedAt,
 	).Scan(&nextVersion)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -272,11 +293,15 @@ SET title = $2,
 	completed_by = $8,
 	assignee_user_id = $9,
 	assignee_name = $10,
-	updated_at = $11,
+	assignees_json = $11,
+	tags_json = $12,
+	sort_position = $13,
+	updated_at = $14,
 	version = version + 1
-WHERE id = $1 AND deleted_at IS NULL AND version = $12
+WHERE id = $1 AND deleted_at IS NULL AND version = $15
 RETURNING version`
 
+	assigneesJSON, tagsJSON := marshalTaskExtras(task)
 	var nextVersion int64
 	err := r.db.QueryRow(context.Background(), q,
 		task.ID,
@@ -289,6 +314,9 @@ RETURNING version`
 		task.CompletedBy,
 		task.AssigneeUserID,
 		task.AssigneeName,
+		assigneesJSON,
+		tagsJSON,
+		task.SortPosition,
 		task.UpdatedAt,
 		expectedVersion,
 	).Scan(&nextVersion)
@@ -499,6 +527,118 @@ WHERE project_id = $1 AND status = $2 AND deleted_at IS NULL`
 	return count, nil
 }
 
+func (r *PostgresTaskRepository) MaxSortPosition(projectID, columnStatus string) (int, error) {
+	projectID = strings.TrimSpace(projectID)
+	columnStatus = strings.TrimSpace(columnStatus)
+	if projectID == "" || columnStatus == "" {
+		return -1, nil
+	}
+	const q = `
+SELECT COALESCE(MAX(sort_position), -1)
+FROM tasks
+WHERE project_id = $1 AND status = $2 AND deleted_at IS NULL`
+	var max int
+	err := r.db.QueryRow(context.Background(), q, projectID, columnStatus).Scan(&max)
+	if err != nil {
+		return 0, err
+	}
+	return max, nil
+}
+
+func (r *PostgresTaskRepository) ReorderTasksInColumn(projectID, columnStatus string, orderedIDs []string) ([]model.Task, error) {
+	projectID = strings.TrimSpace(projectID)
+	columnStatus = strings.TrimSpace(columnStatus)
+	if projectID == "" || columnStatus == "" || len(orderedIDs) == 0 {
+		return nil, ErrInvalidReorder
+	}
+	cleaned := make([]string, 0, len(orderedIDs))
+	seen := make(map[string]struct{}, len(orderedIDs))
+	for _, raw := range orderedIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			return nil, ErrInvalidReorder
+		}
+		if _, ok := seen[id]; ok {
+			return nil, ErrInvalidReorder
+		}
+		seen[id] = struct{}{}
+		cleaned = append(cleaned, id)
+	}
+
+	ctx := context.Background()
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	const listQ = `
+SELECT id
+FROM tasks
+WHERE project_id = $1 AND status = $2 AND deleted_at IS NULL
+ORDER BY sort_position ASC, created_at DESC`
+
+	rows, err := tx.Query(ctx, listQ, projectID, columnStatus)
+	if err != nil {
+		return nil, err
+	}
+	current := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		current = append(current, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(current) != len(cleaned) {
+		return nil, ErrInvalidReorder
+	}
+	curSet := make(map[string]struct{}, len(current))
+	for _, id := range current {
+		curSet[id] = struct{}{}
+	}
+	for _, id := range cleaned {
+		if _, ok := curSet[id]; !ok {
+			return nil, ErrInvalidReorder
+		}
+	}
+
+	now := time.Now().UTC()
+	const upQ = `
+UPDATE tasks
+SET sort_position = $1, updated_at = $2, version = version + 1
+WHERE id = $3 AND project_id = $4 AND status = $5 AND deleted_at IS NULL`
+	for i, id := range cleaned {
+		tag, err := tx.Exec(ctx, upQ, i, now, id, projectID, columnStatus)
+		if err != nil {
+			return nil, err
+		}
+		if tag.RowsAffected() == 0 {
+			return nil, ErrInvalidReorder
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	out := make([]model.Task, 0, len(cleaned))
+	for _, id := range cleaned {
+		task, err := r.GetByID(id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, task)
+	}
+	return out, nil
+}
+
 func (r *PostgresTaskRepository) CreateComment(comment model.TaskComment) (model.TaskComment, error) {
 	const q = `
 INSERT INTO task_comments (id, task_id, user_id, author_name, body, created_at)
@@ -662,12 +802,25 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
+func marshalTaskExtras(task model.Task) (assigneesJSON, tagsJSON string) {
+	aBytes, err := json.Marshal(task.Assignees)
+	if err != nil || len(aBytes) == 0 || string(aBytes) == "null" {
+		aBytes = []byte("[]")
+	}
+	tBytes, err := json.Marshal(task.Tags)
+	if err != nil || len(tBytes) == 0 || string(tBytes) == "null" {
+		tBytes = []byte("[]")
+	}
+	return string(aBytes), string(tBytes)
+}
+
 func scanTask(row scanner) (model.Task, error) {
 	var task model.Task
 	var status string
 	var priority string
 	var completedBy string
 	var deletedAt *time.Time
+	var assigneesJSON, tagsJSON string
 
 	err := row.Scan(
 		&task.ID,
@@ -681,6 +834,9 @@ func scanTask(row scanner) (model.Task, error) {
 		&task.CreatedBy,
 		&task.AssigneeUserID,
 		&task.AssigneeName,
+		&assigneesJSON,
+		&tagsJSON,
+		&task.SortPosition,
 		&task.TeamID,
 		&task.ProjectID,
 		&task.CreatedAt,
@@ -691,8 +847,17 @@ func scanTask(row scanner) (model.Task, error) {
 	if err != nil {
 		return model.Task{}, err
 	}
+	_ = json.Unmarshal([]byte(assigneesJSON), &task.Assignees)
+	_ = json.Unmarshal([]byte(tagsJSON), &task.Tags)
+	if task.Tags == nil {
+		task.Tags = []string{}
+	}
+	if task.Assignees == nil {
+		task.Assignees = []model.TaskAssignee{}
+	}
 	task.Status = model.TaskStatus(status)
 	task.Priority = model.TaskPriority(priority)
 	task.CompletedBy = strings.TrimSpace(completedBy)
+	task.HydrateAssigneesFromLegacy()
 	return task, nil
 }

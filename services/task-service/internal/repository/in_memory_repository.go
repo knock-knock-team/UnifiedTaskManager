@@ -26,6 +26,8 @@ type TaskStore interface {
 	UpdateColumnPosition(id string, position int) error
 	DeleteColumn(id string) error
 	CountByProjectAndStatus(projectID, status string) (int, error)
+	MaxSortPosition(projectID, columnStatus string) (int, error)
+	ReorderTasksInColumn(projectID, columnStatus string, orderedIDs []string) ([]model.Task, error)
 	CreateComment(comment model.TaskComment) (model.TaskComment, error)
 	ListCommentsByTaskID(taskID string) ([]model.TaskComment, error)
 	GetCommentByID(commentID string) (model.TaskComment, error)
@@ -117,6 +119,13 @@ func (r *InMemoryTaskRepository) listInternal(ownerID, teamID, projectID string,
 	}
 
 	sort.Slice(items, func(i, j int) bool {
+		if projectID != "" {
+			si := items[i].SortPosition
+			sj := items[j].SortPosition
+			if si != sj {
+				return si < sj
+			}
+		}
 		return items[i].CreatedAt.After(items[j].CreatedAt)
 	})
 
@@ -275,6 +284,92 @@ func (r *InMemoryTaskRepository) CountByProjectAndStatus(projectID, status strin
 		}
 	}
 	return count, nil
+}
+
+func (r *InMemoryTaskRepository) MaxSortPosition(projectID, columnStatus string) (int, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	projectID = strings.TrimSpace(projectID)
+	columnStatus = strings.TrimSpace(columnStatus)
+	if projectID == "" || columnStatus == "" {
+		return -1, nil
+	}
+	max := -1
+	for _, task := range r.tasks {
+		if task.ProjectID == projectID && string(task.Status) == columnStatus {
+			if task.SortPosition > max {
+				max = task.SortPosition
+			}
+		}
+	}
+	return max, nil
+}
+
+func (r *InMemoryTaskRepository) ReorderTasksInColumn(projectID, columnStatus string, orderedIDs []string) ([]model.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	projectID = strings.TrimSpace(projectID)
+	columnStatus = strings.TrimSpace(columnStatus)
+	if projectID == "" || columnStatus == "" || len(orderedIDs) == 0 {
+		return nil, ErrInvalidReorder
+	}
+	cleaned := make([]string, 0, len(orderedIDs))
+	seen := make(map[string]struct{}, len(orderedIDs))
+	for _, raw := range orderedIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			return nil, ErrInvalidReorder
+		}
+		if _, ok := seen[id]; ok {
+			return nil, ErrInvalidReorder
+		}
+		seen[id] = struct{}{}
+		cleaned = append(cleaned, id)
+	}
+
+	current := make([]string, 0)
+	for _, t := range r.tasks {
+		if t.ProjectID != projectID || string(t.Status) != columnStatus {
+			continue
+		}
+		current = append(current, t.ID)
+	}
+	sort.Slice(current, func(i, j int) bool {
+		ti := r.tasks[current[i]]
+		tj := r.tasks[current[j]]
+		if ti.SortPosition != tj.SortPosition {
+			return ti.SortPosition < tj.SortPosition
+		}
+		return ti.CreatedAt.After(tj.CreatedAt)
+	})
+
+	if len(current) != len(cleaned) {
+		return nil, ErrInvalidReorder
+	}
+	curSet := make(map[string]struct{}, len(current))
+	for _, id := range current {
+		curSet[id] = struct{}{}
+	}
+	for _, id := range cleaned {
+		if _, ok := curSet[id]; !ok {
+			return nil, ErrInvalidReorder
+		}
+	}
+
+	now := time.Now().UTC()
+	out := make([]model.Task, 0, len(cleaned))
+	for i, id := range cleaned {
+		t, ok := r.tasks[id]
+		if !ok {
+			return nil, ErrInvalidReorder
+		}
+		t.SortPosition = i
+		t.UpdatedAt = now
+		t.Version++
+		r.tasks[id] = t
+		out = append(out, t)
+	}
+	return out, nil
 }
 
 func (r *InMemoryTaskRepository) CreateComment(comment model.TaskComment) (model.TaskComment, error) {

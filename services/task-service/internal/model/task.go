@@ -1,6 +1,15 @@
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// TaskAssignee is one person responsible for the task (multi-assignee supported).
+type TaskAssignee struct {
+	UserID      string `json:"userId"`
+	DisplayName string `json:"displayName,omitempty"`
+}
 
 type TaskStatus string
 
@@ -28,14 +37,48 @@ type Task struct {
 	CompletedAt    *time.Time   `json:"completedAt,omitempty"`
 	CompletedBy    string       `json:"completedBy,omitempty"`
 	CreatedBy      string       `json:"createdBy"`
-	AssigneeUserID string       `json:"assigneeUserId,omitempty"`
-	AssigneeName   string       `json:"assigneeName,omitempty"`
+	Assignees      []TaskAssignee `json:"assignees,omitempty"`
+	Tags           []string       `json:"tags,omitempty"`
+	AssigneeUserID string         `json:"assigneeUserId,omitempty"`
+	AssigneeName   string         `json:"assigneeName,omitempty"`
 	TeamID         string       `json:"teamId,omitempty"`
 	ProjectID      string       `json:"projectId,omitempty"`
+	SortPosition   int          `json:"sortPosition"`
 	UnreadComments int          `json:"unreadComments,omitempty"`
 	Version        int64        `json:"version"`
 	CreatedAt      time.Time    `json:"createdAt"`
 	UpdatedAt      time.Time    `json:"updatedAt"`
+}
+
+// HydrateAssignees fills assignees slice from legacy single-assignee columns when JSON is empty.
+func (t *Task) HydrateAssigneesFromLegacy() {
+	if t == nil {
+		return
+	}
+	if len(t.Assignees) > 0 {
+		return
+	}
+	id := strings.TrimSpace(t.AssigneeUserID)
+	if id == "" {
+		return
+	}
+	name := strings.TrimSpace(t.AssigneeName)
+	t.Assignees = []TaskAssignee{{UserID: id, DisplayName: name}}
+}
+
+// SyncPrimaryAssignee updates legacy assignee_* from the first entry in Assignees for notification consumers.
+func (t *Task) SyncPrimaryAssigneeFromAssignees() {
+	if t == nil {
+		return
+	}
+	if len(t.Assignees) == 0 {
+		t.AssigneeUserID = ""
+		t.AssigneeName = ""
+		return
+	}
+	first := t.Assignees[0]
+	t.AssigneeUserID = strings.TrimSpace(first.UserID)
+	t.AssigneeName = strings.TrimSpace(first.DisplayName)
 }
 
 type TaskComment struct {

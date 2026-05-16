@@ -70,6 +70,7 @@ func main() {
 		}()
 		userDirectory = rabbitUserDirectory
 		log.Printf("rabbitmq user directory rpc enabled queue=%s timeout=%s", cfg.RabbitUserExistsQueue, cfg.RabbitRPCTimeout)
+
 	}
 
 	boardHub := board.NewDistributedHub(cfg.BoardRedisURL)

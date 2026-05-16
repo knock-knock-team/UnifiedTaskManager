@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	observability "observability-go"
+
 	"UnifiedTaskManager/services/task-service/internal/board"
+	"UnifiedTaskManager/services/task-service/internal/model"
 	"UnifiedTaskManager/services/task-service/internal/repository"
 	"UnifiedTaskManager/services/task-service/internal/service"
 )
@@ -30,10 +34,11 @@ type HTTPHandler struct {
 	tokens      *service.TokenManager
 	permissions *service.PermissionClient
 	allowOrigin string
+	logger      *slog.Logger
 }
 
 func NewHTTPHandler(svc *service.TaskService, boardHub *board.DistributedHub, ping func(context.Context) error, tokens *service.TokenManager, permissions *service.PermissionClient) *HTTPHandler {
-	return &HTTPHandler{svc: svc, boardHub: boardHub, ping: ping, tokens: tokens, permissions: permissions, allowOrigin: "*"}
+	return &HTTPHandler{svc: svc, boardHub: boardHub, ping: ping, tokens: tokens, permissions: permissions, allowOrigin: "*", logger: observability.NewLogger("task-service")}
 }
 
 func (h *HTTPHandler) SetCORSAllowOrigin(origin string) {
@@ -53,11 +58,25 @@ func (h *HTTPHandler) Routes() http.Handler {
 	mux.HandleFunc("/v1/tasks", h.auth(h.tasks))
 	mux.HandleFunc("/v1/tasks/", h.auth(h.taskByID))
 	mux.HandleFunc("/v1/boards/stream", h.auth(h.boardStream))
-	return h.withCORS(mux)
+	mux.Handle("/metrics", observability.MetricsHandler())
+	return observability.NewHTTPMetrics("task-service").Middleware(h.logger, h.withCORS(mux))
 }
 
 func (h *HTTPHandler) Run(addr string) error {
 	return http.ListenAndServe(addr, h.Routes())
+}
+
+func (h *HTTPHandler) audit(r *http.Request, event string, attrs ...any) {
+	if h.logger == nil {
+		return
+	}
+	base := []any{
+		"event_type", event,
+		"actor_user_id", currentUserID(r.Context()),
+		"team_id", currentTeamID(r.Context()),
+	}
+	base = append(base, attrs...)
+	h.logger.InfoContext(r.Context(), "audit_event", base...)
 }
 
 func (h *HTTPHandler) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -145,6 +164,10 @@ func (h *HTTPHandler) tasks(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		h.listTasks(w, r)
 	case http.MethodPost:
+		if strings.TrimSpace(r.URL.Query().Get("action")) == "reorder" {
+			h.reorderTasksInColumn(w, r)
+			return
+		}
 		h.createTask(w, r)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -189,6 +212,7 @@ func (h *HTTPHandler) taskColumns(w http.ResponseWriter, r *http.Request) {
 			h.writeServiceError(w, err)
 			return
 		}
+		h.audit(r, "task_column_created", "project_id", projectID, "column_id", item.ID)
 		writeJSON(w, http.StatusCreated, item)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -211,8 +235,8 @@ func (h *HTTPHandler) reorderTaskColumns(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req struct {
-		IDs      []string          `json:"ids"`
-		Versions map[string]int64  `json:"versions"`
+		IDs      []string         `json:"ids"`
+		Versions map[string]int64 `json:"versions"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -221,6 +245,7 @@ func (h *HTTPHandler) reorderTaskColumns(w http.ResponseWriter, r *http.Request)
 		h.writeServiceError(w, err)
 		return
 	}
+	h.audit(r, "task_columns_reordered", "project_id", projectID, "column_count", len(req.IDs))
 	items, err := h.svc.ListColumnsByProject(projectID)
 	if err != nil {
 		h.writeServiceError(w, err)
@@ -261,12 +286,14 @@ func (h *HTTPHandler) taskColumnByID(w http.ResponseWriter, r *http.Request) {
 			h.writeServiceError(w, err)
 			return
 		}
+		h.audit(r, "task_column_updated", "project_id", column.ProjectID, "column_id", id)
 		writeColumnJSON(w, http.StatusOK, updated)
 	case http.MethodDelete:
 		if err := h.svc.DeleteColumn(id, currentUserID(r.Context())); err != nil {
 			h.writeServiceError(w, err)
 			return
 		}
+		h.audit(r, "task_column_deleted", "project_id", column.ProjectID, "column_id", id)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -338,6 +365,7 @@ func (h *HTTPHandler) taskByID(w http.ResponseWriter, r *http.Request) {
 			h.writeServiceError(w, err)
 			return
 		}
+		h.audit(r, "task_deleted", "project_id", task.ProjectID, "task_id", id, "status", task.Status)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -346,14 +374,16 @@ func (h *HTTPHandler) taskByID(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPHandler) createTask(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Title          string     `json:"title"`
-		Description    string     `json:"description"`
-		Status         string     `json:"status"`
-		Priority       string     `json:"priority"`
-		DueAt          *time.Time `json:"dueAt"`
-		AssigneeUserID string     `json:"assigneeUserId"`
-		AssigneeName   string     `json:"assigneeName"`
-		ProjectID      string     `json:"projectId"`
+		Title          string               `json:"title"`
+		Description    string               `json:"description"`
+		Status         string               `json:"status"`
+		Priority       string               `json:"priority"`
+		DueAt          *time.Time           `json:"dueAt"`
+		Assignees      []model.TaskAssignee `json:"assignees"`
+		Tags           []string             `json:"tags"`
+		AssigneeUserID string               `json:"assigneeUserId"`
+		AssigneeName   string               `json:"assigneeName"`
+		ProjectID      string               `json:"projectId"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -379,6 +409,8 @@ func (h *HTTPHandler) createTask(w http.ResponseWriter, r *http.Request) {
 		Priority:       req.Priority,
 		DueAt:          req.DueAt,
 		CreatedBy:      currentUserID(r.Context()),
+		Assignees:      req.Assignees,
+		Tags:           req.Tags,
 		AssigneeUserID: req.AssigneeUserID,
 		AssigneeName:   req.AssigneeName,
 		TeamID:         teamID,
@@ -388,7 +420,39 @@ func (h *HTTPHandler) createTask(w http.ResponseWriter, r *http.Request) {
 		h.writeServiceError(w, err)
 		return
 	}
+	h.audit(r, "task_created", "project_id", task.ProjectID, "task_id", task.ID, "status", task.Status, "priority", task.Priority, "assignee_count", len(task.Assignees), "tag_count", len(task.Tags))
 	writeTaskJSON(w, http.StatusCreated, task)
+}
+
+func (h *HTTPHandler) reorderTasksInColumn(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	projectID := strings.TrimSpace(r.URL.Query().Get("projectId"))
+	teamID := strings.TrimSpace(currentTeamID(r.Context()))
+	if teamID == "" || projectID == "" {
+		writeError(w, http.StatusBadRequest, "teamId and projectId are required")
+		return
+	}
+	if !h.ensureProjectPermission(w, r, teamID, projectID, "tasks.write") {
+		return
+	}
+
+	var req struct {
+		Status string   `json:"status"`
+		IDs    []string `json:"ids"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	tasks, err := h.svc.ReorderTasksInColumn(projectID, currentUserID(r.Context()), strings.TrimSpace(req.Status), req.IDs)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	h.audit(r, "tasks_reordered", "project_id", projectID, "status", strings.TrimSpace(req.Status), "task_count", len(req.IDs))
+	writeJSON(w, http.StatusOK, map[string]any{"items": tasks})
 }
 
 func (h *HTTPHandler) listTasks(w http.ResponseWriter, r *http.Request) {
@@ -436,14 +500,16 @@ func (h *HTTPHandler) listTasks(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPHandler) updateTask(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
-		Title          *string    `json:"title"`
-		Description    *string    `json:"description"`
-		Status         *string    `json:"status"`
-		Priority       *string    `json:"priority"`
-		DueAt          *time.Time `json:"dueAt"`
-		AssigneeUserID *string    `json:"assigneeUserId"`
-		AssigneeName   *string    `json:"assigneeName"`
-		Completed      *bool      `json:"completed"`
+		Title          *string               `json:"title"`
+		Description    *string               `json:"description"`
+		Status         *string               `json:"status"`
+		Priority       *string               `json:"priority"`
+		DueAt          *time.Time            `json:"dueAt"`
+		Assignees      *[]model.TaskAssignee `json:"assignees"`
+		Tags           *[]string             `json:"tags"`
+		AssigneeUserID *string               `json:"assigneeUserId"`
+		AssigneeName   *string               `json:"assigneeName"`
+		Completed      *bool                 `json:"completed"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -455,6 +521,8 @@ func (h *HTTPHandler) updateTask(w http.ResponseWriter, r *http.Request, id stri
 		Status:         req.Status,
 		Priority:       req.Priority,
 		DueAt:          req.DueAt,
+		Assignees:      req.Assignees,
+		Tags:           req.Tags,
 		AssigneeUserID: req.AssigneeUserID,
 		AssigneeName:   req.AssigneeName,
 		Completed:      req.Completed,
@@ -468,6 +536,7 @@ func (h *HTTPHandler) updateTask(w http.ResponseWriter, r *http.Request, id stri
 		h.writeServiceError(w, err)
 		return
 	}
+	h.audit(r, "task_updated", "project_id", updated.ProjectID, "task_id", updated.ID, "status", updated.Status, "priority", updated.Priority, "completed", updated.CompletedAt != nil)
 	writeTaskJSON(w, http.StatusOK, updated)
 }
 
@@ -510,6 +579,7 @@ func (h *HTTPHandler) taskComments(w http.ResponseWriter, r *http.Request, taskI
 			h.writeServiceError(w, err)
 			return
 		}
+		h.audit(r, "task_comment_created", "project_id", task.ProjectID, "task_id", taskID, "comment_id", comment.ID)
 		writeJSON(w, http.StatusCreated, comment)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -533,6 +603,7 @@ func (h *HTTPHandler) taskCommentsRead(w http.ResponseWriter, r *http.Request, t
 		h.writeServiceError(w, err)
 		return
 	}
+	h.audit(r, "task_comments_read", "project_id", task.ProjectID, "task_id", taskID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -553,6 +624,7 @@ func (h *HTTPHandler) taskCommentByID(w http.ResponseWriter, r *http.Request, ta
 		h.writeServiceError(w, err)
 		return
 	}
+	h.audit(r, "task_comment_deleted", "project_id", task.ProjectID, "task_id", taskID, "comment_id", commentID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -569,6 +641,8 @@ func (h *HTTPHandler) writeServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, "dependency unavailable")
 	case errors.Is(err, service.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, repository.ErrInvalidReorder):
+		writeError(w, http.StatusBadRequest, "bad request")
 	case errors.Is(err, repository.ErrNotFound):
 		writeError(w, http.StatusNotFound, "task not found")
 	default:

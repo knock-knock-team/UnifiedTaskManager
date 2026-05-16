@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -69,13 +68,17 @@ func (h *HTTPHandler) boardStream(w http.ResponseWriter, r *http.Request) {
 	upgrader := newBoardUpgrader(h.allowOrigin)
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("board ws upgrade failed: %v", err)
+		if h.logger != nil {
+			h.logger.WarnContext(r.Context(), "board_ws_upgrade_failed", "project_id", projectID, "team_id", teamID, "error", err.Error())
+		}
 		return
 	}
 
 	client, unregister := h.boardHub.Register(teamID, projectID, userID, userName)
+	h.audit(r, "board_stream_connected", "project_id", projectID)
 	defer unregister()
 	defer conn.Close()
+	defer h.audit(r, "board_stream_disconnected", "project_id", projectID)
 
 	h.sendBoardSnapshot(client, teamID, projectID)
 
@@ -128,6 +131,7 @@ func (h *HTTPHandler) boardStream(w http.ResponseWriter, r *http.Request) {
 		case "ping", "presence.ping":
 			h.boardHub.TouchPresence(teamID, projectID, userID, userName)
 		case "resync":
+			h.audit(r, "board_stream_resync", "project_id", projectID)
 			h.sendBoardSnapshot(client, teamID, projectID)
 		}
 	}

@@ -173,6 +173,25 @@ func (h *Hub) sendToClient(client *Client, payload []byte) {
 	}
 }
 
+func (h *Hub) SendSnapshot(client *Client, tasks []model.Task, columns []model.TaskColumn) {
+	if client == nil {
+		return
+	}
+	users := h.presenceSnapshot(roomKey(client.TeamID, client.ProjectID))
+	payload, err := json.Marshal(Event{
+		Type:      "board.snapshot",
+		TeamID:    client.TeamID,
+		ProjectID: client.ProjectID,
+		Tasks:     tasks,
+		Columns:   columns,
+		Users:     users,
+	})
+	if err != nil {
+		return
+	}
+	h.sendToClient(client, payload)
+}
+
 func (h *Hub) broadcastRaw(key string, payload []byte, exceptUserID string) {
 	h.mu.RLock()
 	clients := h.rooms[key]
@@ -196,6 +215,10 @@ func (h *Hub) TaskCreated(actorID string, task model.Task) {
 
 func (h *Hub) TaskUpdated(actorID string, task model.Task) {
 	h.Publish(Event{Type: "task.updated", TeamID: task.TeamID, ProjectID: task.ProjectID, Task: task, ActorID: actorID})
+}
+
+func (h *Hub) TasksReordered(actorID, teamID, projectID string, tasks []model.Task) {
+	h.Publish(Event{Type: "tasks.reordered", TeamID: teamID, ProjectID: projectID, Tasks: tasks, ActorID: actorID})
 }
 
 func (h *Hub) TaskDeleted(actorID, teamID, projectID, taskID string) {

@@ -22,7 +22,9 @@ type CreateTaskInput struct {
 	Priority       string
 	DueAt          *time.Time
 	CreatedBy      string
-	AssigneeUserID string
+	Assignees      []model.TaskAssignee
+	Tags           []string
+	AssigneeUserID string // legacy: used when Assignees is empty
 	AssigneeName   string
 	TeamID         string
 	ProjectID      string
@@ -34,6 +36,8 @@ type UpdateTaskInput struct {
 	Status           *string    `json:"status"`
 	Priority         *string    `json:"priority"`
 	DueAt            *time.Time `json:"dueAt"`
+	Assignees        *[]model.TaskAssignee `json:"assignees"`
+	Tags             *[]string  `json:"tags"`
 	AssigneeUserID   *string    `json:"assigneeUserId"`
 	AssigneeName     *string    `json:"assigneeName"`
 	Completed        *bool      `json:"completed"`
@@ -93,15 +97,10 @@ func (s *TaskService) Create(input CreateTaskInput) (model.Task, error) {
 	if createdBy == "" {
 		createdBy = "anonymous"
 	}
-	assigneeUserID := strings.TrimSpace(input.AssigneeUserID)
-	if assigneeUserID != "" {
-		exists, err := s.userDirectory.UserExists(context.Background(), assigneeUserID)
-		if err != nil {
-			return model.Task{}, ErrUpstream
-		}
-		if !exists {
-			return model.Task{}, ErrBadRequest
-		}
+
+	assignees, err := s.resolveAssignees(input.Assignees, input.AssigneeUserID, input.AssigneeName)
+	if err != nil {
+		return model.Task{}, err
 	}
 
 	now := time.Now().UTC()
@@ -113,18 +112,24 @@ func (s *TaskService) Create(input CreateTaskInput) (model.Task, error) {
 		Priority:       normalizePriority(input.Priority),
 		DueAt:          input.DueAt,
 		CreatedBy:      createdBy,
-		AssigneeUserID: assigneeUserID,
-		AssigneeName:   strings.TrimSpace(input.AssigneeName),
+		Assignees:      assignees,
+		Tags:           normalizeTaskTags(input.Tags),
 		TeamID:         teamID,
 		ProjectID:      projectID,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		Version:        1,
 	}
+	task.SyncPrimaryAssigneeFromAssignees()
 	if task.Status == model.TaskStatusDone {
 		task.CompletedAt = &now
 		task.CompletedBy = createdBy
 	}
+	maxPos, err := s.repo.MaxSortPosition(projectID, string(task.Status))
+	if err != nil {
+		return model.Task{}, err
+	}
+	task.SortPosition = maxPos + 1
 	created, err := s.repo.Create(task)
 	if err != nil {
 		return model.Task{}, err
@@ -160,6 +165,26 @@ func (s *TaskService) ListByProject(projectID string, limit, offset int, search 
 	return s.repo.ListByProject(projectID, limit, offset, search)
 }
 
+func (s *TaskService) ReorderTasksInColumn(projectID, actorID, columnStatus string, orderedIDs []string) ([]model.Task, error) {
+	projectID = strings.TrimSpace(projectID)
+	columnStatus = strings.TrimSpace(columnStatus)
+	if projectID == "" || columnStatus == "" || len(orderedIDs) == 0 {
+		return nil, ErrBadRequest
+	}
+	tasks, err := s.repo.ReorderTasksInColumn(projectID, columnStatus, orderedIDs)
+	if err != nil {
+		if errors.Is(err, repository.ErrInvalidReorder) {
+			return nil, ErrBadRequest
+		}
+		return nil, err
+	}
+	if s.board != nil && len(tasks) > 0 {
+		tm := strings.TrimSpace(tasks[0].TeamID)
+		s.board.TasksReordered(strings.TrimSpace(actorID), tm, projectID, tasks)
+	}
+	return tasks, nil
+}
+
 func (s *TaskService) Update(id string, input UpdateTaskInput) (model.Task, error) {
 	current, err := s.repo.GetByID(strings.TrimSpace(id))
 	if err != nil {
@@ -179,7 +204,15 @@ func (s *TaskService) Update(id string, input UpdateTaskInput) (model.Task, erro
 		current.Description = strings.TrimSpace(*input.Description)
 	}
 	if input.Status != nil {
-		current.Status = normalizeStatus(*input.Status)
+		nextStatus := normalizeStatus(*input.Status)
+		if nextStatus != current.Status {
+			maxPos, err := s.repo.MaxSortPosition(strings.TrimSpace(current.ProjectID), string(nextStatus))
+			if err != nil {
+				return model.Task{}, err
+			}
+			current.SortPosition = maxPos + 1
+		}
+		current.Status = nextStatus
 		if current.Status == model.TaskStatusDone && current.CompletedAt == nil {
 			now := time.Now().UTC()
 			current.CompletedAt = &now
@@ -193,21 +226,30 @@ func (s *TaskService) Update(id string, input UpdateTaskInput) (model.Task, erro
 	if input.DueAt != nil {
 		current.DueAt = input.DueAt
 	}
-	if input.AssigneeUserID != nil {
-		assigneeUserID := strings.TrimSpace(*input.AssigneeUserID)
-		if assigneeUserID != "" {
-			exists, err := s.userDirectory.UserExists(context.Background(), assigneeUserID)
-			if err != nil {
-				return model.Task{}, ErrUpstream
-			}
-			if !exists {
-				return model.Task{}, ErrBadRequest
-			}
-		}
-		current.AssigneeUserID = assigneeUserID
-	}
+
+	legacyName := ""
 	if input.AssigneeName != nil {
-		current.AssigneeName = strings.TrimSpace(*input.AssigneeName)
+		legacyName = strings.TrimSpace(*input.AssigneeName)
+	}
+	if input.Assignees != nil {
+		list, err := s.resolveAssignees(*input.Assignees, "", "")
+		if err != nil {
+			return model.Task{}, err
+		}
+		current.Assignees = list
+		current.SyncPrimaryAssigneeFromAssignees()
+	} else if input.AssigneeUserID != nil {
+		assigneeUserID := strings.TrimSpace(*input.AssigneeUserID)
+		list, err := s.resolveAssignees(nil, assigneeUserID, legacyName)
+		if err != nil {
+			return model.Task{}, err
+		}
+		current.Assignees = list
+		current.SyncPrimaryAssigneeFromAssignees()
+	}
+
+	if input.Tags != nil {
+		current.Tags = normalizeTaskTags(*input.Tags)
 	}
 	if input.Completed != nil {
 		completionExplicitlyUpdated = true
@@ -553,4 +595,65 @@ func normalizePriority(value string) model.TaskPriority {
 	default:
 		return model.TaskPriorityMedium
 	}
+}
+
+func normalizeTaskTags(in []string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(in))
+	for _, raw := range in {
+		t := strings.TrimSpace(raw)
+		if t == "" {
+			continue
+		}
+		key := strings.ToLower(t)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, t)
+		if len(out) >= 24 {
+			break
+		}
+	}
+	return out
+}
+
+// resolveAssignees normalizes assignee list. When explicit is empty, legacy single assignee is applied.
+func (s *TaskService) resolveAssignees(explicit []model.TaskAssignee, legacyUserID, legacyName string) ([]model.TaskAssignee, error) {
+	if len(explicit) == 0 {
+		id := strings.TrimSpace(legacyUserID)
+		if id == "" {
+			return nil, nil
+		}
+		ok, err := s.userDirectory.UserExists(context.Background(), id)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, ErrBadRequest
+		}
+		name := strings.TrimSpace(legacyName)
+		return []model.TaskAssignee{{UserID: id, DisplayName: name}}, nil
+	}
+	seen := make(map[string]struct{})
+	out := make([]model.TaskAssignee, 0, len(explicit))
+	for _, a := range explicit {
+		id := strings.TrimSpace(a.UserID)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ok, err := s.userDirectory.UserExists(context.Background(), id)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, ErrBadRequest
+		}
+		out = append(out, model.TaskAssignee{UserID: id, DisplayName: strings.TrimSpace(a.DisplayName)})
+	}
+	return out, nil
 }
