@@ -1,3 +1,3 @@
-module vg-task-system/services/api-gateway
+module UnifiedTaskManager/services/api-gateway
 
 go 1.22

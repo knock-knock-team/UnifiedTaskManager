@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: VG Task System API
+  title: Unified Task Manager
   version: 0.1.0
   description: |
     Public API contract exposed through the API Gateway.

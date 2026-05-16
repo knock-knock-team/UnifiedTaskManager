@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"vg-task-system/services/api-gateway/internal/service"
+	"UnifiedTaskManager/services/api-gateway/internal/service"
 )
 
 type HTTPHandler struct {

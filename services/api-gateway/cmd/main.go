@@ -3,9 +3,9 @@ package main
 import (
 	"log"
 
-	"vg-task-system/services/api-gateway/internal/config"
-	"vg-task-system/services/api-gateway/internal/handler"
-	"vg-task-system/services/api-gateway/internal/service"
+	"UnifiedTaskManager/services/api-gateway/internal/config"
+	"UnifiedTaskManager/services/api-gateway/internal/handler"
+	"UnifiedTaskManager/services/api-gateway/internal/service"
 )
 
 func main() {
