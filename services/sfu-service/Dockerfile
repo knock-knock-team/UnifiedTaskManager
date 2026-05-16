@@ -9,7 +9,7 @@ RUN apk add --no-cache git ca-certificates \
  && CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o /sfu ./cmd/main.go
 
 FROM alpine:3.18
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache --repository=http://dl-cdn.alpinelinux.org/alpine/v3.18/main ca-certificates
 COPY --from=builder /sfu /usr/local/bin/sfu
 EXPOSE 8086
 ENTRYPOINT ["/usr/local/bin/sfu"]
