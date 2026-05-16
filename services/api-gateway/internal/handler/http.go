@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -19,13 +20,19 @@ type HTTPHandler struct {
 	userProxy   *httputil.ReverseProxy
 	taskProxy   *httputil.ReverseProxy
 	chatProxy   *httputil.ReverseProxy
+	callProxy   *httputil.ReverseProxy
+	fileProxy   *httputil.ReverseProxy
+	mlProxy     *httputil.ReverseProxy
 	userURL     *url.URL
 	taskURL     *url.URL
 	chatURL     *url.URL
+	callURL     *url.URL
+	fileURL     *url.URL
+	mlURL       *url.URL
 	allowOrigin string
 }
 
-func NewHTTPHandler(userServiceURL, taskServiceURL, chatServiceURL string, tokens *service.TokenManager) (*HTTPHandler, error) {
+func NewHTTPHandler(userServiceURL, taskServiceURL, chatServiceURL, callServiceURL, fileServiceURL, mlServiceURL string, tokens *service.TokenManager) (*HTTPHandler, error) {
 	userURL, err := url.Parse(strings.TrimSpace(userServiceURL))
 	if err != nil {
 		return nil, err
@@ -38,15 +45,33 @@ func NewHTTPHandler(userServiceURL, taskServiceURL, chatServiceURL string, token
 	if err != nil {
 		return nil, err
 	}
+	callURL, err := url.Parse(strings.TrimSpace(callServiceURL))
+	if err != nil {
+		return nil, err
+	}
+	fileURL, err := url.Parse(strings.TrimSpace(fileServiceURL))
+	if err != nil {
+		return nil, err
+	}
+	mlURL, err := url.Parse(strings.TrimSpace(mlServiceURL))
+	if err != nil {
+		return nil, err
+	}
 
 	return &HTTPHandler{
 		tokens:      tokens,
 		userProxy:   newProxy(userURL),
 		taskProxy:   newProxy(taskURL),
 		chatProxy:   newProxy(chatURL),
+		callProxy:   newCallProxy(callURL),
+		fileProxy:   newProxy(fileURL),
+		mlProxy:     newProxy(mlURL),
 		userURL:     userURL,
 		taskURL:     taskURL,
 		chatURL:     chatURL,
+		callURL:     callURL,
+		fileURL:     fileURL,
+		mlURL:       mlURL,
 		allowOrigin: "*",
 	}, nil
 }
@@ -91,6 +116,18 @@ func (h *HTTPHandler) readyz(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "chat-service not ready"})
 		return
 	}
+	if err := pingUpstream(ctx, h.callURL); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "call-service not ready"})
+		return
+	}
+	if err := pingUpstream(ctx, h.fileURL); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "file-service not ready"})
+		return
+	}
+	if err := pingUpstream(ctx, h.mlURL); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "ml-service not ready"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
@@ -113,18 +150,21 @@ func (h *HTTPHandler) withCORS(next http.HandlerFunc) http.HandlerFunc {
 
 func (h *HTTPHandler) route(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimSpace(r.URL.Path)
+	log.Printf("Routing request: %s %s", r.Method, path)
 	if path == "" || path == "/" {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "gateway"})
 		return
 	}
 
 	if isPublicRoute(path) {
+		log.Printf("Public route: %s", path)
 		h.userProxy.ServeHTTP(w, r)
 		return
 	}
 
 	claims, err := h.requireAccessToken(r)
 	if err != nil {
+		log.Printf("Auth failed for %s: %v", path, err)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "Unauthorized"})
 		return
 	}
@@ -132,12 +172,25 @@ func (h *HTTPHandler) route(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case isUserRoute(path):
+		log.Printf("User route: %s", path)
 		h.userProxy.ServeHTTP(w, r)
 	case isTaskRoute(path):
+		log.Printf("Task route: %s", path)
 		h.taskProxy.ServeHTTP(w, r)
 	case isChatRoute(path):
+		log.Printf("Chat route: %s", path)
 		h.chatProxy.ServeHTTP(w, r)
+	case isCallRoute(path):
+		log.Printf("Call route: %s", path)
+		h.callProxy.ServeHTTP(w, r)
+	case isFileRoute(path):
+		log.Printf("File route: %s", path)
+		h.fileProxy.ServeHTTP(w, r)
+	case isMlRoute(path):
+		log.Printf("ML route: %s", path)
+		h.mlProxy.ServeHTTP(w, r)
 	default:
+		log.Printf("No route found for: %s", path)
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not found"})
 	}
 }
@@ -195,6 +248,18 @@ func isChatRoute(path string) bool {
 	return strings.HasPrefix(path, "/v1/chats")
 }
 
+func isCallRoute(path string) bool {
+	return strings.HasPrefix(path, "/v1/calls") || strings.HasPrefix(path, "/api/calls") || strings.HasPrefix(path, "/calls")
+}
+
+func isFileRoute(path string) bool {
+	return strings.HasPrefix(path, "/v1/file-environments")
+}
+
+func isMlRoute(path string) bool {
+	return strings.HasPrefix(path, "/task_name_description") || strings.HasPrefix(path, "/api/tasks/assistant")
+}
+
 func newProxy(target *url.URL) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	originalDirector := proxy.Director
@@ -202,6 +267,24 @@ func newProxy(target *url.URL) *httputil.ReverseProxy {
 		originalDirector(req)
 		req.Host = target.Host
 		req.Header.Set("X-Forwarded-Host", req.Host)
+	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"message": fmt.Sprintf("upstream unavailable: %v", err)})
+	}
+	return proxy
+}
+
+func newCallProxy(target *url.URL) *httputil.ReverseProxy {
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Host = target.Host
+		req.Header.Set("X-Forwarded-Host", req.Host)
+		// Remove /api prefix for call-service
+		if strings.HasPrefix(req.URL.Path, "/api/calls") {
+			req.URL.Path = strings.Replace(req.URL.Path, "/api/calls", "/calls", 1)
+		}
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"message": fmt.Sprintf("upstream unavailable: %v", err)})

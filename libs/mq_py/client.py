@@ -1,13 +1,14 @@
-import asyncio
 import json
 import time
 import uuid
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, Callable, TypeVar, Generic, Awaitable
+from collections.abc import Coroutine
 
 import aio_pika
-from aio_pika import Channel, Connection, DeliveryMode, ExchangeType, Message
+from aio_pika import Message, DeliveryMode, ExchangeType, Channel, Connection
+from aio_pika.abc import AbstractIncomingMessage
 
-from libs.mq_py.error import MqConnectionError, MqError, MqPublishError, MqSerializationError, MqTimeoutError
+from libs.mq_py.error import MqError, MqTimeoutError, MqSerializationError
 from libs.mq_py.types import PublishOptions
 
 T = TypeVar("T")
@@ -39,21 +40,21 @@ class MqClient:
 
     def __init__(self, connection: Connection):
         self._connection = connection
-
+    
     @classmethod
     async def connect(cls, uri: str) -> "MqClient":
         try:
             connection = await aio_pika.connect_robust(uri)
             return cls(connection)
         except Exception as e:
-            raise MqConnectionError.from_exception(e, "Connection failed")
-
+            raise MqError.from_exception(e, "Connection failed")
+    
     async def close(self) -> None:
         await self._connection.close()
-
+    
     async def channel(self) -> Channel:
         return await self._connection.channel()
-
+    
     async def declare_queue(
         self,
         channel: Channel,
@@ -68,7 +69,7 @@ class MqClient:
             exclusive=exclusive,
             auto_delete=auto_delete,
         )
-
+    
     async def declare_exchange(
         self,
         channel: Channel,
@@ -81,9 +82,10 @@ class MqClient:
             type=exchange_type,
             durable=durable,
         )
-
+    
     def _apply_publish_options(self, body: bytes, opts: PublishOptions) -> Message:
-        delivery_mode = DeliveryMode.PERSISTENT if opts.persistent else DeliveryMode.NOT_PERSISTENT
+        delivery_mode = DeliveryMode.PERSISTENT if opts.persistent else DeliveryMode.TRANSIENT
+        
         return Message(
             body=body,
             content_type=opts.content_type,
@@ -94,7 +96,7 @@ class MqClient:
             delivery_mode=delivery_mode,
             headers=opts.headers or {},
         )
-
+    
     async def publish_json(
         self,
         channel: Channel,
@@ -106,16 +108,15 @@ class MqClient:
         opts = opts or PublishOptions()
         body = _encode_json(payload)
         message = self._apply_publish_options(body, opts)
-
+        exchange_obj = await channel.get_exchange(exchange) if exchange else None
         try:
-            if exchange:
-                exchange_obj = await self.declare_exchange(channel, exchange)
+            if exchange_obj:
                 await exchange_obj.publish(message, routing_key=routing_key)
             else:
                 await channel.default_exchange.publish(message, routing_key=routing_key)
         except Exception as e:
-            raise MqPublishError.from_exception(e, "Publish failed")
-
+            raise MqError.from_exception(e, "Publish failed")
+    
     async def request_json[Resp](
         self,
         channel: Channel,
@@ -124,7 +125,7 @@ class MqClient:
         timeout: float | None = None,
     ) -> Resp:
         reply_queue = await self.declare_queue(
-            channel,
+            channel, 
             name="",
             exclusive=True,
             auto_delete=True,
@@ -138,31 +139,15 @@ class MqClient:
             persistent=False,
         )
         await self.publish_json(channel, "", queue, request, opts)
-
-        response_future: asyncio.Future[Resp] = asyncio.get_running_loop().create_future()
-
-        async def on_reply(message: aio_pika.abc.AbstractIncomingMessage) -> None:
-            async with message.process(ignore_processed=True):
-                if message.correlation_id != correlation_id:
-                    return
-                try:
-                    payload = _decode_json(message.body)
-                except MqSerializationError as exc:
-                    if not response_future.done():
-                        response_future.set_exception(exc)
-                    return
-                if not response_future.done():
-                    response_future.set_result(payload)
-
-        consumer_tag = await reply_queue.consume(on_reply, no_ack=False)
-        try:
-            wait_timeout = timeout if timeout and timeout > 0 else 3.0
-            return await asyncio.wait_for(response_future, timeout=wait_timeout)
-        except TimeoutError as exc:
-            raise MqTimeoutError(f"RPC request timed out after {wait_timeout} seconds") from exc
-        finally:
-            await reply_queue.cancel(consumer_tag)
-
+        
+        async with channel.iterator(queue=reply_queue.name) as messages:
+            async for message in messages:
+                async with message.process():
+                    if message.correlation_id != correlation_id:
+                        continue
+                    return _decode_json[Resp](message.body)
+        raise MqTimeoutError("RPC request timed out")
+    
     async def serve_rpc[Req, Resp](
         self,
         channel: Channel,
@@ -172,10 +157,12 @@ class MqClient:
     ) -> None:
         queue = await self.declare_queue(channel, name=queue_name)
         await channel.set_qos(prefetch_count=prefetch_count)
-        async with queue.iterator() as messages:
-            async for message in messages:
-                async with message.process(requeue=False):
-                    req = _decode_json(message.body)
+        
+        async for message in queue.iterator():
+            async with message.process(requeue_on_error=False):
+                try:
+                    req = _decode_json[Req](message.body)
+                    
                     if not message.reply_to:
                         continue
                     resp = await handler(req)
@@ -189,3 +176,5 @@ class MqClient:
                         response_msg,
                         routing_key=message.reply_to,
                     )
+                except Exception:
+                    continue

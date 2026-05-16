@@ -15,7 +15,15 @@ func main() {
 	}
 
 	tokens := service.NewTokenManager(cfg.JWTSecret)
-	h, err := handler.NewHTTPHandler(cfg.UserServiceURL, cfg.TaskServiceURL, cfg.ChatServiceURL, tokens)
+	h, err := handler.NewHTTPHandler(
+		cfg.UserServiceURL,
+		cfg.TaskServiceURL,
+		cfg.ChatServiceURL,
+		cfg.CallServiceURL,
+		cfg.FileServiceURL,
+		cfg.MLServiceURL,
+		tokens,
+	)
 	if err != nil {
 		log.Fatalf("gateway init failed: %v", err)
 	}

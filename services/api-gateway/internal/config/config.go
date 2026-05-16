@@ -10,6 +10,9 @@ type Config struct {
 	UserServiceURL  string
 	TaskServiceURL  string
 	ChatServiceURL  string
+	CallServiceURL  string
+	FileServiceURL  string
+	MLServiceURL    string
 	JWTSecret       string
 	CORSAllowOrigin string
 }
@@ -20,6 +23,9 @@ func FromEnv() Config {
 		UserServiceURL:  getenv("GATEWAY_USER_SERVICE_URL", getenv("USER_SERVICE_URL", "http://user-service:8082")),
 		TaskServiceURL:  getenv("GATEWAY_TASK_SERVICE_URL", getenv("TASK_SERVICE_URL", "http://task-service:8083")),
 		ChatServiceURL:  getenv("GATEWAY_CHAT_SERVICE_URL", getenv("CHAT_SERVICE_URL", "http://chat-service:8084")),
+		CallServiceURL:  getenv("GATEWAY_CALL_SERVICE_URL", getenv("CALL_SERVICE_URL", "http://call-service:8085")),
+		FileServiceURL:  getenv("GATEWAY_FILE_SERVICE_URL", getenv("FILE_SERVICE_URL", "http://file-service:8088")),
+		MLServiceURL:    getenv("GATEWAY_ML_SERVICE_URL", getenv("ML_SERVICE_URL", "http://ml-service:8087")),
 		JWTSecret:       getenv("JWT_SECRET", ""),
 		CORSAllowOrigin: getenv("CORS_ALLOW_ORIGIN", "*"),
 	}

@@ -1,6 +1,6 @@
 services:
   api-gateway:
-    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/vg-task-system}/api-gateway:${IMAGE_TAG:-latest}
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/api-gateway:${IMAGE_TAG:-latest}
     pull_policy: always
     env_file: .env.production
     environment:
@@ -16,7 +16,7 @@ services:
       - backend
 
   frontend:
-    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/vg-task-system}/frontend:${IMAGE_TAG:-latest}
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/frontend:${IMAGE_TAG:-latest}
     pull_policy: always
     env_file: .env.production
     depends_on:
@@ -31,7 +31,7 @@ services:
       start_period: 3s
 
   sfu-service:
-    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/vg-task-system}/sfu-service:${IMAGE_TAG:-latest}
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/sfu-service:${IMAGE_TAG:-latest}
     pull_policy: always
     env_file: .env.production
     networks:
@@ -40,7 +40,7 @@ services:
           - call-service
 
   user-service:
-    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/vg-task-system}/user-service:${IMAGE_TAG:-latest}
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/user-service:${IMAGE_TAG:-latest}
     pull_policy: always
     env_file: .env.production
     depends_on:
@@ -52,7 +52,7 @@ services:
       - backend
   
   ml-service:
-    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/vg-task-system}/ml-service:${IMAGE_TAG:-latest}
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/ml-service:${IMAGE_TAG:-latest}
     pull_policy: always
     env_file: .env.production
     depends_on:
@@ -64,7 +64,7 @@ services:
       - backend
 
   task-service:
-    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/vg-task-system}/task-service:${IMAGE_TAG:-latest}
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/task-service:${IMAGE_TAG:-latest}
     pull_policy: always
     env_file: .env.production
     depends_on:
@@ -76,13 +76,13 @@ services:
       - backend
 
   file-service:
-    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/vg-task-system}/file-service:${IMAGE_TAG:-latest}
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/file-service:${IMAGE_TAG:-latest}
     pull_policy: always
     restart: on-failure
     env_file: .env.production
     environment:
       FILE_SERVICE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      FILE_SERVICE_STORAGE_ROOT: /var/lib/vg-file-service/storage
+      FILE_SERVICE_STORAGE_ROOT: /var/lib/file-service/storage
       FILE_SERVICE_RABBITMQ_ENABLED: "true"
       FILE_SERVICE_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       FILE_SERVICE_USER_EXISTS_QUEUE: user-service.user-exists
@@ -94,12 +94,12 @@ services:
       rabbitmq:
         condition: service_started
     volumes:
-      - file_service_storage:/var/lib/vg-file-service/storage
+      - file_service_storage:/var/lib/file-service/storage
     networks:
       - backend
 
   chat-service:
-    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/vg-task-system}/chat-service:${IMAGE_TAG:-latest}
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/chat-service:${IMAGE_TAG:-latest}
     pull_policy: always
     restart: on-failure
     env_file: .env.production
