@@ -98,7 +98,7 @@
   "refresh": "30s",
   "schemaVersion": 39,
   "tags": [
-    "vg-task-system",
+    "unified-task-manager",
     "observability"
   ],
   "templating": {
@@ -110,8 +110,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "VG Task System Overview",
-  "uid": "vg-task-system-overview",
+  "title": "Unified Task Manager Overview",
+  "uid": "unified-task-manager-overview",
   "version": 1,
   "weekStart": ""
 }

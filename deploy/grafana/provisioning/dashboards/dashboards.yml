@@ -1,7 +1,7 @@
 apiVersion: 1
 
 providers:
-  - name: VG Task System
+  - name: Unified Task Manager
     orgId: 1
     folder: Observability
     type: file
