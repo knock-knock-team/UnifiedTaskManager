@@ -1,0 +1,8 @@
+fastapi==0.115.12
+uvicorn==0.34.2
+sqlalchemy==2.0.41
+asyncpg==0.30.0
+aio-pika==9.5.5
+pydantic-settings==2.9.1
+python-json-logger==2.0.7
+python-multipart==0.0.20
