@@ -1,5 +1,7 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from contextlib import suppress
 
 from fastapi import FastAPI
 
@@ -8,6 +10,7 @@ import src.core.state as state
 from src.db.database import engine
 from src.db.models import Base
 from src.mq.client import MqClient
+from src.mq.agent_commands_consumer import consume_agent_commands
 
 logger = logging.getLogger("file-service.lifespan")
 
@@ -21,10 +24,19 @@ async def lifespan(_: FastAPI):
     if settings.file_service_rabbitmq_enabled:
         state.mq_client = await MqClient.connect(settings.file_service_rabbitmq_url)
         logger.info("rabbitmq connected")
+        state.agent_commands_consumer_task = asyncio.create_task(
+            consume_agent_commands(state.mq_client)
+        )
+        logger.info("agent commands consumer started")
 
     try:
         yield
     finally:
+        if state.agent_commands_consumer_task is not None:
+            state.agent_commands_consumer_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await state.agent_commands_consumer_task
+            state.agent_commands_consumer_task = None
         if state.mq_client is not None:
             await state.mq_client.close()
             state.mq_client = None

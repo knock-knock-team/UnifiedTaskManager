@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .core import lifespan, settings
-from .api import task_router
+from .api import assistant_router, task_router
 
 
 def create_app() -> FastAPI:
@@ -22,6 +22,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(task_router, prefix="")
+    app.include_router(assistant_router, prefix="")
     return app
 
 
