@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
+	"UnifiedTaskManager/services/task-service/internal/board"
 	"UnifiedTaskManager/services/task-service/internal/config"
+	"UnifiedTaskManager/services/task-service/internal/consumer"
 	"UnifiedTaskManager/services/task-service/internal/event"
 	"UnifiedTaskManager/services/task-service/internal/handler"
 	"UnifiedTaskManager/services/task-service/internal/repository"
@@ -40,6 +43,9 @@ func main() {
 
 	publisher := event.NewNoopPublisher()
 	userDirectory := service.NewNoopUserDirectory()
+	tokenManager := service.NewTokenManager(cfg.JWTSecret)
+	permissionClient := service.NewPermissionClient(cfg.UserServiceURL, 3*time.Second)
+	var agentCommandsConsumer *consumer.AgentCommandsConsumer
 	if cfg.RabbitEnabled {
 		rabbitPublisher, err := event.NewRabbitMQPublisher(cfg.RabbitURL, cfg.RabbitExchange)
 		if err != nil {
@@ -66,10 +72,37 @@ func main() {
 		log.Printf("rabbitmq user directory rpc enabled queue=%s timeout=%s", cfg.RabbitUserExistsQueue, cfg.RabbitRPCTimeout)
 	}
 
-	tokenManager := service.NewTokenManager(cfg.JWTSecret)
-	permissionClient := service.NewPermissionClient(cfg.UserServiceURL, 3*time.Second)
+	boardHub := board.NewDistributedHub(cfg.BoardRedisURL)
+	defer boardHub.Close()
 	svc := service.NewTaskService(repo, publisher, userDirectory)
-	h := handler.NewHTTPHandler(svc, repo.Ping, tokenManager, permissionClient)
+	svc.SetBoardNotifier(boardHub)
+	if cfg.RabbitEnabled {
+		var err error
+		agentCommandsConsumer, err = consumer.NewAgentCommandsConsumer(
+			cfg.RabbitURL,
+			cfg.RabbitAgentCommandsQueue,
+			svc,
+			tokenManager,
+			permissionClient,
+		)
+		if err != nil {
+			log.Fatalf("rabbitmq agent commands consumer init failed: %v", err)
+		}
+		defer func() {
+			if err := agentCommandsConsumer.Close(); err != nil {
+				log.Printf("rabbitmq agent commands consumer close warning: %v", err)
+			}
+		}()
+		go func() {
+			err := agentCommandsConsumer.Run(ctx)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("rabbitmq agent commands consumer stopped: %v", err)
+			}
+		}()
+		log.Printf("rabbitmq agent commands consumer enabled queue=%s", cfg.RabbitAgentCommandsQueue)
+	}
+
+	h := handler.NewHTTPHandler(svc, boardHub, repo.Ping, tokenManager, permissionClient)
 	h.SetCORSAllowOrigin(cfg.CORSAllowOrigin)
 
 	log.Printf("task-service starting on %s", cfg.HTTPAddr)
