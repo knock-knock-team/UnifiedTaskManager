@@ -10,6 +10,7 @@ import { HomePage } from './pages/HomePage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { ProtectedRoute } from './routes/ProtectedRoute';
+import { AgentChatDrawer } from './ui/AgentChatDrawer';
 import { Toast } from './ui/Toast';
 
 
@@ -221,6 +222,14 @@ function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+
+      <AgentChatDrawer
+        apiBase={apiBase}
+        accessToken={accessToken}
+        isAuthorized={isAuthorized}
+        showNotification={showNotification}
+        onUpdateAccessToken={onUpdateAccessToken}
+      />
 
       <Toast notification={notification} onClose={() => setNotification(null)} />
     </div>

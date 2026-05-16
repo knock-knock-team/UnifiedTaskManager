@@ -137,7 +137,9 @@ export function FileEnvironments({ apiBase, accessToken, onUpdateAccessToken, sh
   useEffect(() => {
     if (!selectedEnvironment) return;
     localStorage.setItem('taskTeamId', selectedEnvironment.teamId);
+    localStorage.setItem('taskTeamName', selectedEnvironment.teamName || '');
     localStorage.setItem('taskProjectId', selectedEnvironment.projectId);
+    localStorage.setItem('taskProjectName', selectedEnvironment.projectName || '');
     void ensureAndOpenEnvironment(selectedEnvironment, '.');
   }, [selectedEnvironmentKey]);
 

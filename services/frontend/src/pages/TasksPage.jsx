@@ -628,7 +628,10 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
 
   useEffect(() => {
     storage.taskTeamId = selectedTeamId;
+    storage.taskTeamName = activeTeam?.name || activeTeam?.title || '';
     if (!selectedTeamId) {
+      storage.taskTeamName = '';
+      storage.taskProjectName = '';
       setProjects([]);
       setSelectedProjectId('');
       setTasks([]);
@@ -639,11 +642,13 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
     void loadProjects(selectedTeamId);
     void loadTeamDirectory(selectedTeamId);
-  }, [closeTaskEditor, loadProjects, selectedTeamId, loadTeamDirectory]);
+  }, [activeTeam, closeTaskEditor, loadProjects, selectedTeamId, loadTeamDirectory]);
 
   useEffect(() => {
     storage.taskProjectId = selectedProjectId;
+    storage.taskProjectName = activeProject?.name || activeProject?.title || '';
     if (!selectedProjectId || !selectedTeamId) {
+      storage.taskProjectName = '';
       setTasks([]);
       setColumns([]);
       closeTaskEditor();
@@ -654,7 +659,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     void loadTasks(selectedTeamId, selectedProjectId);
     void loadProjectDirectory(selectedTeamId, selectedProjectId);
     void loadDeadlineSettings(selectedTeamId, selectedProjectId);
-  }, [closeTaskEditor, selectedProjectId, selectedTeamId, loadColumns, loadDeadlineSettings, loadProjectDirectory, loadTasks]);
+  }, [activeProject, closeTaskEditor, selectedProjectId, selectedTeamId, loadColumns, loadDeadlineSettings, loadProjectDirectory, loadTasks]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -890,6 +895,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         auth: true
       }, onUpdateAccessToken);
       storage.taskProjectId = '';
+      storage.taskProjectName = '';
       showNotification(`Проект «${projectTitle}» удалён`, 'success');
       setTasks([]);
       setColumns([]);
@@ -915,7 +921,9 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         auth: true
       }, onUpdateAccessToken);
       storage.taskTeamId = '';
+      storage.taskTeamName = '';
       storage.taskProjectId = '';
+      storage.taskProjectName = '';
       setSelectedTeamId('');
       setSelectedProjectId('');
       setProjects([]);

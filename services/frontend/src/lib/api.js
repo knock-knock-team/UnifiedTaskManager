@@ -43,11 +43,23 @@ export const storage = {
   set taskTeamId(value) {
     localStorage.setItem('taskTeamId', value || '');
   },
+  get taskTeamName() {
+    return localStorage.getItem('taskTeamName') || '';
+  },
+  set taskTeamName(value) {
+    localStorage.setItem('taskTeamName', value || '');
+  },
   get taskProjectId() {
     return localStorage.getItem('taskProjectId') || '';
   },
   set taskProjectId(value) {
     localStorage.setItem('taskProjectId', value || '');
+  },
+  get taskProjectName() {
+    return localStorage.getItem('taskProjectName') || '';
+  },
+  set taskProjectName(value) {
+    localStorage.setItem('taskProjectName', value || '');
   },
   get accessToken() {
     return localStorage.getItem('accessToken') || '';
