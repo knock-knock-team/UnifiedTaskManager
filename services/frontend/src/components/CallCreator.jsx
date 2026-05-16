@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { VideoCall } from './VideoCall';
+import { setLastVideoCallId } from '../lib/lastVideoCallId';
 import '../styles/CallCreator.css';
 
 /**
@@ -11,15 +12,14 @@ export function CallCreator({
   token,
   apiBase = '/api',
   onCallCreated,
-  onError
+  onError,
+  showNotification
 }) {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [createdCall, setCreatedCall] = useState(null);
   const [activeCall, setActiveCall] = useState(null);
-
-  console.log('CallCreator render:', { createdCall, activeCall, loading, error });
 
   const handleCreateCall = async (e) => {
     e.preventDefault();
@@ -44,8 +44,7 @@ export function CallCreator({
       }
 
       const callData = await response.json();
-      console.log('Call created successfully:', callData);
-      
+
       const callInfo = {
         id: callData.id,
         link: `${window.location.origin}/calls/join/${callData.id}`,
@@ -54,9 +53,9 @@ export function CallCreator({
         ]
       };
 
-      console.log('Setting active call:', callInfo);
       setActiveCall(callInfo);
       onCallCreated?.(callData);
+      setLastVideoCallId(callInfo.id);
       // Перейти сразу на страницу присоединения к встрече, чтобы попасть в VideoCall
       try {
         navigate(`/calls/join/${callInfo.id}`);
@@ -93,13 +92,13 @@ export function CallCreator({
         token={token}
         apiBase={apiBase}
         isInitiator={true}
+        showNotification={showNotification}
         onCallEnd={() => setActiveCall(null)}
       />
     );
   }
 
   if (createdCall) {
-    console.log('Rendering created call page:', createdCall);
     return (
       <section className="single-page">
         <article className="pane single-card">

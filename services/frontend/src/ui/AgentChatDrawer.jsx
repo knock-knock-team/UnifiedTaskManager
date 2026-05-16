@@ -27,6 +27,26 @@ function formatAssistantError(message) {
   return text;
 }
 
+const TASK_MUTATION_TOOLS = new Set([
+  'create_task_column',
+  'update_task_column',
+  'delete_task_column',
+  'create_task',
+  'update_task',
+  'delete_task',
+  'change_task_status',
+  'change_task_description',
+  'attach_file_to_task',
+  'detach_file_from_task'
+]);
+
+function getHistoryStorageKey(scope) {
+  const teamId = String(scope?.teamId || '').trim();
+  const projectId = String(scope?.projectId || '').trim();
+  if (!teamId || !projectId) return '';
+  return `agentDrawerHistory:${teamId}:${projectId}`;
+}
+
 export function AgentChatDrawer({ apiBase, accessToken, isAuthorized, showNotification, onUpdateAccessToken }) {
   const [isOpen, setIsOpen] = useState(false);
   const [draft, setDraft] = useState('');
@@ -62,6 +82,33 @@ export function AgentChatDrawer({ apiBase, accessToken, isAuthorized, showNotifi
     const timer = setInterval(syncScope, 800);
     return () => clearInterval(timer);
   }, [isAuthorized]);
+
+  useEffect(() => {
+    if (!isAuthorized) return;
+    const key = getHistoryStorageKey(scope);
+    if (!key) {
+      setMessages([]);
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : [];
+      setMessages(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setMessages([]);
+    }
+  }, [isAuthorized, scope.projectId, scope.teamId]);
+
+  useEffect(() => {
+    if (!isAuthorized) return;
+    const key = getHistoryStorageKey(scope);
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(messages.slice(-100)));
+    } catch {
+      // ignore storage overflow or serialization issues
+    }
+  }, [isAuthorized, messages, scope.projectId, scope.teamId]);
 
   useEffect(() => {
     const container = messagesRef.current;
@@ -180,6 +227,9 @@ export function AgentChatDrawer({ apiBase, accessToken, isAuthorized, showNotifi
             setStreamStatus(`Использую ${payload.tool_name || 'инструмент'}...`);
           } else if (payload.type === 'tool_end') {
             setStreamStatus(`Готово: ${payload.tool_name || 'инструмент'}`);
+            if (TASK_MUTATION_TOOLS.has(String(payload.tool_name || '')) && payload.payload?.success !== false) {
+              window.dispatchEvent(new CustomEvent('assistant:task-data-changed', { detail: { toolName: payload.tool_name } }));
+            }
           } else if (payload.type === 'final') {
             setStreamStatus('');
             updateAssistantMessage(assistantId, (item) => ({

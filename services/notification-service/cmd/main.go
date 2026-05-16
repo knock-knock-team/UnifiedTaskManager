@@ -49,6 +49,7 @@ type task struct {
 	Status         string
 	Priority       string
 	DueAt          time.Time
+	CompletedAt    *time.Time
 	AssigneeUserID string
 	AssigneeName   string
 	TeamID         string
@@ -181,14 +182,14 @@ func (a *app) sendAutomaticBatch(ctx context.Context) {
 func (a *app) findDueTasks(ctx context.Context) ([]task, error) {
 	const q = `
 SELECT t.id, t.title, t.description, t.status, t.priority, t.due_at,
-	t.assignee_user_id, t.assignee_name, t.team_id, t.project_id
+	t.completed_at, t.assignee_user_id, t.assignee_name, t.team_id, t.project_id
 FROM tasks t
 LEFT JOIN deadline_notification_settings s ON s.project_id = t.project_id
 WHERE t.deleted_at IS NULL
 	AND t.due_at IS NOT NULL
+	AND t.completed_at IS NULL
 	AND t.due_at > NOW()
 	AND t.due_at <= NOW() + (COALESCE(s.notify_before_minutes, $1) * INTERVAL '1 minute')
-	AND t.status <> 'done'
 	AND t.assignee_user_id <> ''
 	AND NOT EXISTS (
 		SELECT 1
@@ -439,6 +440,9 @@ func isAdminRole(role string) bool {
 }
 
 func (a *app) sendDeadlineNotification(ctx context.Context, item task, mode string) error {
+	if item.CompletedAt != nil {
+		return fmt.Errorf("%w: task is already done", errBadRequest)
+	}
 	if item.AssigneeUserID == "" {
 		return fmt.Errorf("%w: assignee is not set", errBadRequest)
 	}
@@ -467,7 +471,7 @@ ON CONFLICT DO NOTHING`, item.ID, item.AssigneeUserID, item.DueAt, mode)
 
 func (a *app) getTask(ctx context.Context, taskID string) (task, error) {
 	const q = `
-SELECT id, title, description, status, priority, due_at, assignee_user_id, assignee_name, team_id, project_id
+SELECT id, title, description, status, priority, due_at, completed_at, assignee_user_id, assignee_name, team_id, project_id
 FROM tasks
 WHERE id = $1 AND deleted_at IS NULL`
 	var item task
@@ -478,6 +482,7 @@ WHERE id = $1 AND deleted_at IS NULL`
 		&item.Status,
 		&item.Priority,
 		&item.DueAt,
+		&item.CompletedAt,
 		&item.AssigneeUserID,
 		&item.AssigneeName,
 		&item.TeamID,
@@ -500,6 +505,12 @@ func (a *app) sendEmail(recipient user, item task) error {
 	host := strings.TrimSpace(a.cfg.SMTPHost)
 	if host == "" {
 		return errors.New("smtp host is not configured")
+	}
+	if strings.TrimSpace(a.cfg.SMTPUsername) == "" {
+		return errors.New("smtp username is not configured")
+	}
+	if strings.TrimSpace(a.cfg.SMTPPassword) == "" {
+		return errors.New("smtp password is not configured")
 	}
 	from := strings.TrimSpace(a.cfg.SMTPFrom)
 	if from == "" {
@@ -662,7 +673,7 @@ func scanTasks(rows pgx.Rows) ([]task, error) {
 	items := make([]task, 0)
 	for rows.Next() {
 		var item task
-		if err := rows.Scan(&item.ID, &item.Title, &item.Description, &item.Status, &item.Priority, &item.DueAt, &item.AssigneeUserID, &item.AssigneeName, &item.TeamID, &item.ProjectID); err != nil {
+		if err := rows.Scan(&item.ID, &item.Title, &item.Description, &item.Status, &item.Priority, &item.DueAt, &item.CompletedAt, &item.AssigneeUserID, &item.AssigneeName, &item.TeamID, &item.ProjectID); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -690,7 +701,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 func fromEnv() config {
 	return config{
 		HTTPAddr:          getenv("NOTIFICATION_SERVICE_HTTP_ADDR", ":8089"),
-		DatabaseURL:       getenv("NOTIFICATION_DATABASE_URL", getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/unified-task-manager?sslmode=disable")),
+		DatabaseURL:       getenv("NOTIFICATION_DATABASE_URL", getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/vg_task_system?sslmode=disable")),
 		UserServiceURL:    getenv("NOTIFICATION_USER_SERVICE_URL", getenv("USER_SERVICE_URL", "http://localhost:8082")),
 		JWTSecret:         getenv("JWT_SECRET", ""),
 		CORSAllowOrigin:   getenv("CORS_ALLOW_ORIGIN", "*"),
@@ -700,7 +711,7 @@ func fromEnv() config {
 		SMTPUsername:      getenv("SMTP_USERNAME", ""),
 		SMTPPassword:      getenv("SMTP_PASSWORD", ""),
 		SMTPFrom:          getenv("SMTP_FROM", getenv("SMTP_USERNAME", "")),
-		SMTPFromName:      getenv("SMTP_FROM_NAME", "Unified Task Manager"),
+		SMTPFromName:      getenv("SMTP_FROM_NAME", "VG Task System"),
 		DeadlineLookAhead: time.Duration(getenvInt("NOTIFICATION_DEADLINE_LOOKAHEAD_MINUTES", 60*24)) * time.Minute,
 		ScanInterval:      time.Duration(getenvInt("NOTIFICATION_SCAN_INTERVAL_SECONDS", 300)) * time.Second,
 		PermissionTimeout: time.Duration(getenvInt("NOTIFICATION_PERMISSION_TIMEOUT_SECONDS", 3)) * time.Second,

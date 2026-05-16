@@ -24,6 +24,16 @@ function App() {
   const [profile, setProfile] = useState(null);
   const [isProfileLoading, setIsProfileLoading] = useState(false);
   const [notification, setNotification] = useState(null);
+  const [uiTheme, setUiTheme] = useState(() => {
+    if (typeof window === 'undefined') return 'dark';
+    try {
+      const stored = localStorage.getItem('uiTheme');
+      if (stored === 'light' || stored === 'dark') return stored;
+    } catch {
+      // ignore
+    }
+    return 'dark';
+  });
 
   const isAuthorized = Boolean(accessToken);
   const isProtectedPath = useMemo(() => {
@@ -41,6 +51,15 @@ function App() {
     storage.apiBase = storage.apiBase;
     storage.taskApiBase = storage.taskApiBase;
   }, []);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', uiTheme);
+    try {
+      localStorage.setItem('uiTheme', uiTheme);
+    } catch {
+      // ignore
+    }
+  }, [uiTheme]);
 
   useEffect(() => {
     storage.accessToken = accessToken;
@@ -183,13 +202,15 @@ function App() {
   return (
     <div className="app">
       <header className="header-shell">
-        <div className="nav-grid">
-          <div className="logo">UNIFIED TASK MANAGER</div>
-          {navItems.map((item) => (
-            <NavLink key={item.to} to={item.to} className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}>
-              {item.label}
-            </NavLink>
-          ))}
+        <div className="header-inner">
+          <div className="nav-grid">
+            <div className="logo">VG TASK SYSTEM</div>
+            {navItems.map((item) => (
+              <NavLink key={item.to} to={item.to} className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}>
+                {item.label}
+              </NavLink>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -217,8 +238,8 @@ function App() {
               </ProtectedRoute>
             )}
           />
-          <Route path="/cabinet" element={<ProtectedRoute isAuthorized={isAuthorized}><CabinetOverviewPage accessToken={accessToken} apiBase={apiBase} onUpdateAccessToken={onUpdateAccessToken} profile={profile} showNotification={showNotification} onLogout={onLogout} /></ProtectedRoute>} />
-          <Route path="/cabinet/settings" element={<ProtectedRoute isAuthorized={isAuthorized}><CabinetSettingsPage profile={profile} accessToken={accessToken} apiBase={apiBase} showNotification={showNotification} onProfileUpdate={setProfile} onUpdateAccessToken={onUpdateAccessToken} /></ProtectedRoute>} />
+          <Route path="/cabinet" element={<ProtectedRoute isAuthorized={isAuthorized}><CabinetOverviewPage accessToken={accessToken} apiBase={apiBase} taskApiBase={storage.taskApiBase} onUpdateAccessToken={onUpdateAccessToken} profile={profile} showNotification={showNotification} onLogout={onLogout} /></ProtectedRoute>} />
+          <Route path="/cabinet/settings" element={<ProtectedRoute isAuthorized={isAuthorized}><CabinetSettingsPage profile={profile} accessToken={accessToken} apiBase={apiBase} showNotification={showNotification} onProfileUpdate={setProfile} onUpdateAccessToken={onUpdateAccessToken} uiTheme={uiTheme} setUiTheme={setUiTheme} /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

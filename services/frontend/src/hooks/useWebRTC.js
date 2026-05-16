@@ -204,11 +204,28 @@ export function useWebRTC(config = {}) {
   // Close peer connection
   const close = useCallback(() => {
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // ignore
+        }
+      });
       localStreamRef.current = null;
     }
 
     if (peerConnectionRef.current) {
+      try {
+        peerConnectionRef.current.getSenders().forEach((sender) => {
+          try {
+            sender.track?.stop();
+          } catch {
+            // ignore
+          }
+        });
+      } catch {
+        // ignore
+      }
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
     }

@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useWebRTC } from '../hooks/useWebRTC';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { setLastVideoCallId } from '../lib/lastVideoCallId';
 import '../styles/VideoCall.css';
 
 /**
@@ -13,8 +15,10 @@ export function VideoCall({
   token,
   apiBase = '/api',
   onCallEnd,
-  isInitiator = false
+  isInitiator = false,
+  showNotification
 }) {
+  const navigate = useNavigate();
   const [callState, setCallState] = useState(isInitiator ? 'waiting' : 'joining');
   const [callDuration, setCallDuration] = useState(0);
   const [isAudioEnabled, setIsAudioEnabled] = useState(false);
@@ -27,10 +31,14 @@ export function VideoCall({
   const sessionReplacedRef = React.useRef(false);
   const hasRemoteOfferRef = React.useRef(false);
   const publishOfferTimerRef = React.useRef(null);
+  const leavingRef = React.useRef(false);
+  const endSessionRef = React.useRef(() => {});
+  const wsCloseCleanupRef = React.useRef(() => {});
+  const closeRtcCleanupRef = React.useRef(() => {});
 
   useEffect(() => {
-    console.log('[Call] VideoCall init - isInitiator=', isInitiator, 'callId=', callId, 'userId=', userId);
-  }, [isInitiator, callId, userId]);
+    setLastVideoCallId(callId);
+  }, [callId]);
 
   useEffect(() => {
     return () => {
@@ -275,23 +283,21 @@ export function VideoCall({
             }
             break;
 
-          case 'end':
-            console.log('[Call] Call ended by:', message.from);
-            closeWebRTC();
-            wsClose();
-            setCallState('ended');
-            onCallEnd?.();
+          case 'end': {
+            const remoteEnded = Boolean(message.from && message.from !== userId);
+            endSessionRef.current?.(
+              remoteEnded ? 'Встреча завершена другим участником' : 'Встреча завершена',
+              'info'
+            );
             break;
+          }
 
           case 'error':
             console.error('[Call] Server error:', message.payload);
             if (message.payload?.code === 'session_replaced') {
               sessionReplacedRef.current = true;
               setError('Вы вошли в этот звонок с другого устройства/вкладки. Текущая сессия завершена.');
-              closeWebRTC();
-              wsClose();
-              setCallState('ended');
-              onCallEnd?.();
+              endSessionRef.current?.(null, 'info');
               break;
             }
             setError(message.payload?.message || 'Call error');
@@ -314,6 +320,51 @@ export function VideoCall({
     },
     shouldReconnect: () => !sessionReplacedRef.current
   });
+
+  const runEndSession = useCallback((message, notifyType = 'success') => {
+    if (leavingRef.current) return;
+    leavingRef.current = true;
+    try {
+      wsClose();
+    } catch {
+      // ignore
+    }
+    try {
+      closeWebRTC();
+    } catch {
+      // ignore
+    }
+    setCallState('ended');
+    onCallEnd?.();
+    if (message) {
+      showNotification?.(message, notifyType);
+    }
+    window.setTimeout(() => {
+      navigate('/calls', { replace: true });
+    }, 220);
+  }, [wsClose, closeWebRTC, onCallEnd, showNotification, navigate]);
+
+  useEffect(() => {
+    endSessionRef.current = runEndSession;
+  }, [runEndSession]);
+
+  wsCloseCleanupRef.current = wsClose;
+  closeRtcCleanupRef.current = closeWebRTC;
+
+  useEffect(() => {
+    return () => {
+      try {
+        wsCloseCleanupRef.current?.();
+      } catch {
+        // ignore
+      }
+      try {
+        closeRtcCleanupRef.current?.();
+      } catch {
+        // ignore
+      }
+    };
+  }, [callId]);
 
   // Create wrapper for ws_send
   const ws = { send: ws_send };
@@ -353,14 +404,17 @@ export function VideoCall({
 
   // Handle end call
   const handleCallEnd = useCallback(async () => {
-    ws_send({
-      type: 'end',
-      call_id: callId,
-      from: userId,
-      payload: { reason: 'user_initiated' }
-    });
+    try {
+      ws_send({
+        type: 'end',
+        call_id: callId,
+        from: userId,
+        payload: { reason: 'user_initiated' }
+      });
+    } catch (error) {
+      console.error('Error sending end signal:', error);
+    }
 
-    // Notify backend
     try {
       await fetch(`${apiBase}/calls/${callId}/end`, {
         method: 'POST',
@@ -373,10 +427,8 @@ export function VideoCall({
       console.error('Error ending call:', error);
     }
 
-    closeWebRTC();
-    setCallState('ended');
-    onCallEnd?.();
-  }, [callId, userId, token, apiBase, ws_send, closeWebRTC, onCallEnd]);
+    runEndSession('Встреча завершена', 'success');
+  }, [callId, userId, token, apiBase, ws_send, runEndSession]);
 
   // Format duration
   const formatDuration = (seconds) => {
@@ -398,10 +450,17 @@ export function VideoCall({
           {/* Local participant */}
           <div className="participant-tile local">
             {localStream ? (
-              <LocalVideo stream={localStream} userId={userId} />
+              isVideoEnabled ? (
+                <LocalVideo stream={localStream} userId={userId} />
+              ) : (
+                <div className="video-placeholder video-placeholder-muted">
+                  <span>Камера выключена</span>
+                  <span className="video-placeholder-hint">Включите камеру кнопкой ниже</span>
+                </div>
+              )
             ) : (
               <div className="video-placeholder">
-                <span>Starting camera...</span>
+                <span>Подключение…</span>
               </div>
             )}
           </div>
@@ -495,15 +554,18 @@ function LocalVideo({ stream, userId }) {
   const videoRef = React.useRef(null);
 
   React.useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
+    const el = videoRef.current;
+    if (!el) return undefined;
+    el.srcObject = stream || null;
+    return () => {
+      el.srcObject = null;
+    };
   }, [stream]);
 
   return (
     <div className="video-track">
       <video ref={videoRef} autoPlay muted playsInline />
-      <div className="video-label">You ({userId.slice(0, 8)})</div>
+      <div className="video-label">Вы ({userId.slice(0, 8)})</div>
     </div>
   );
 }
@@ -515,9 +577,12 @@ function RemoteVideo({ stream, userId }) {
   const videoRef = React.useRef(null);
 
   React.useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
+    const el = videoRef.current;
+    if (!el) return undefined;
+    el.srcObject = stream || null;
+    return () => {
+      el.srcObject = null;
+    };
   }, [stream]);
 
   return (

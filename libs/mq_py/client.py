@@ -83,7 +83,7 @@ class MqClient:
         )
 
     def _apply_publish_options(self, body: bytes, opts: PublishOptions) -> Message:
-        delivery_mode = DeliveryMode.PERSISTENT if opts.persistent else DeliveryMode.TRANSIENT
+        delivery_mode = DeliveryMode.PERSISTENT if opts.persistent else DeliveryMode.NOT_PERSISTENT
         return Message(
             body=body,
             content_type=opts.content_type,
@@ -146,7 +146,7 @@ class MqClient:
                 if message.correlation_id != correlation_id:
                     return
                 try:
-                    payload = _decode_json[Resp](message.body)
+                    payload = _decode_json(message.body)
                 except MqSerializationError as exc:
                     if not response_future.done():
                         response_future.set_exception(exc)
@@ -175,7 +175,7 @@ class MqClient:
         async with queue.iterator() as messages:
             async for message in messages:
                 async with message.process(requeue=False):
-                    req = _decode_json[Req](message.body)
+                    req = _decode_json(message.body)
                     if not message.reply_to:
                         continue
                     resp = await handler(req)

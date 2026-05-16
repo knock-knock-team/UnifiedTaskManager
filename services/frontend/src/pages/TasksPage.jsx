@@ -11,6 +11,8 @@ import {
   priorityLabel,
   statusLabel
 } from '../lib/tasks';
+import { buildTasksCsv, buildTasksJson, downloadBlob } from '../lib/taskExport';
+import { TaskMindMapPanel } from '../components/TaskMindMapPanel';
 
 export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNotification, onUpdateAccessToken }) {
   const navigate = useNavigate();
@@ -95,6 +97,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [memberDirectory, setMemberDirectory] = useState({});
   const [selectedMemberStatsUserId, setSelectedMemberStatsUserId] = useState('');
   const [openTaskMenuTaskId, setOpenTaskMenuTaskId] = useState('');
+  const [taskBoardView, setTaskBoardView] = useState(() => localStorage.getItem('taskBoardView') || 'board');
+  const [calendarCursor, setCalendarCursor] = useState(() => new Date());
 
   const formatNotificationError = useCallback((error, fallbackMessage) => {
     const message = String(error?.message || '').trim();
@@ -112,7 +116,14 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (lower.includes('assignee email was not found') || lower.includes('assignee email is empty')) {
       return 'У исполнителя не заполнен email, уведомление отправить нельзя.';
     }
-    if (lower.includes('smtp host is not configured') || lower.includes('smtp')) {
+    if (
+      lower.includes('smtp host is not configured')
+      || lower.includes('smtp username is not configured')
+      || lower.includes('smtp password is not configured')
+      || lower.includes('username and password not accepted')
+      || lower.includes('authentication failed')
+      || lower.includes('smtp')
+    ) {
       return 'Почтовый сервис уведомлений не настроен.';
     }
     if (lower.includes('task is already done')) {
@@ -128,6 +139,10 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       setSearchQuery(saved);
     }
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem('taskBoardView', taskBoardView);
+  }, [taskBoardView]);
 
   const areColumnOrdersEqual = useCallback((left, right) => {
     if (left.length !== right.length) return false;
@@ -304,6 +319,85 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
     return map;
   }, [boardColumns, filteredTasks]);
+
+  const columnTitleById = useMemo(() => {
+    const map = new Map();
+    boardColumns.forEach((col) => map.set(col.id, col.title || col.id));
+    return map;
+  }, [boardColumns]);
+
+  const listSortedTasks = useMemo(() => {
+    const list = [...filteredTasks];
+    list.sort((a, b) => {
+      const da = a.dueAt ? new Date(a.dueAt).getTime() : Infinity;
+      const db = b.dueAt ? new Date(b.dueAt).getTime() : Infinity;
+      if (da !== db) return da - db;
+      return String(a.title || '').localeCompare(String(b.title || ''), 'ru');
+    });
+    return list;
+  }, [filteredTasks]);
+
+  const calendarMonthLabel = useMemo(
+    () => calendarCursor.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' }),
+    [calendarCursor]
+  );
+
+  const calendarCells = useMemo(() => {
+    const y = calendarCursor.getFullYear();
+    const m = calendarCursor.getMonth();
+    const monthStart = new Date(y, m, 1);
+    const startWeekday = monthStart.getDay();
+    const mondayOffset = (startWeekday + 6) % 7;
+    const gridStart = new Date(monthStart);
+    gridStart.setDate(monthStart.getDate() - mondayOffset);
+    const cells = [];
+    for (let i = 0; i < 42; i += 1) {
+      const d = new Date(gridStart);
+      d.setDate(gridStart.getDate() + i);
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const inMonth = d.getMonth() === m;
+      const dayTasks = filteredTasks.filter((task) => {
+        if (!task.dueAt) return false;
+        const t = new Date(task.dueAt);
+        const tiso = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+        return tiso === iso;
+      });
+      cells.push({ date: d, iso, inMonth, tasks: dayTasks });
+    }
+    return cells;
+  }, [calendarCursor, filteredTasks]);
+
+  const exportFileSlug = useMemo(() => {
+    const raw = (activeProject?.name || activeProject?.title || selectedProjectId || 'project').toString();
+    return raw.replace(/[^a-zA-Zа-яА-ЯёЁ0-9_-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 64) || 'project';
+  }, [activeProject, selectedProjectId]);
+
+  const handleExportCsv = useCallback(() => {
+    if (!filteredTasks.length) {
+      showNotification('Нет задач для экспорта', 'error');
+      return;
+    }
+    const csv = buildTasksCsv(filteredTasks, columnTitleById);
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    downloadBlob(`tasks-${exportFileSlug}-${stamp}.csv`, csv, 'text/csv;charset=utf-8', true);
+    showNotification('CSV сохранён', 'success');
+  }, [columnTitleById, exportFileSlug, filteredTasks, showNotification]);
+
+  const handleExportJson = useCallback(() => {
+    if (!filteredTasks.length) {
+      showNotification('Нет задач для экспорта', 'error');
+      return;
+    }
+    const json = buildTasksJson(filteredTasks, {
+      teamId: selectedTeamId,
+      projectId: selectedProjectId,
+      teamName: activeTeam?.name,
+      projectName: activeProject?.name || activeProject?.title
+    });
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    downloadBlob(`tasks-${exportFileSlug}-${stamp}.json`, json, 'application/json;charset=utf-8', false);
+    showNotification('JSON сохранён', 'success');
+  }, [activeProject, activeTeam, exportFileSlug, filteredTasks, selectedProjectId, selectedTeamId, showNotification]);
 
   const isTaskDone = useCallback((task) => {
     if (!task) return false;
@@ -660,6 +754,17 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     void loadProjectDirectory(selectedTeamId, selectedProjectId);
     void loadDeadlineSettings(selectedTeamId, selectedProjectId);
   }, [activeProject, closeTaskEditor, selectedProjectId, selectedTeamId, loadColumns, loadDeadlineSettings, loadProjectDirectory, loadTasks]);
+
+  useEffect(() => {
+    if (!selectedTeamId || !selectedProjectId) return undefined;
+    const handleAssistantRefresh = () => {
+      void loadColumns(selectedTeamId, selectedProjectId);
+      void loadTasks(selectedTeamId, selectedProjectId);
+      void loadProjectDirectory(selectedTeamId, selectedProjectId);
+    };
+    window.addEventListener('assistant:task-data-changed', handleAssistantRefresh);
+    return () => window.removeEventListener('assistant:task-data-changed', handleAssistantRefresh);
+  }, [loadColumns, loadProjectDirectory, loadTasks, selectedProjectId, selectedTeamId]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -1627,7 +1732,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
           </details>
 
           {selectedProjectId && (
-            <details className="sidebar-card" open={canManageDeadlineSettings}>
+            <details className="sidebar-card">
               <summary>Авто-дедлайны</summary>
               <form className="sidebar-form" onSubmit={handleDeadlineSettingsSubmit}>
                 <label>
@@ -1907,17 +2012,54 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         </aside>
 
         <div className="board-main">
-          <div className="tasks-header compact-header board-topbar">
-            <div>
-              <p className="section-label">ЗАДАЧИ</p>
-              <h2>{activeProject?.name || 'Доска проекта'}</h2>
+          <header className="tasks-pro-header board-topbar">
+            <div className="tasks-pro-header-main">
+              <p className="section-label">Рабочая область</p>
+              <h2 className="tasks-pro-title">{activeProject?.name || activeProject?.title || 'Доска проекта'}</h2>
+              {selectedTeamId && selectedProjectId && (
+                <p className="tasks-pro-sub">
+                  {activeTeam?.name || 'Команда'}
+                  <span className="tasks-pro-dot" aria-hidden="true" />
+                  {filteredTasks.length} задач в текущем фильтре
+                </p>
+              )}
             </div>
-            <div className="tasks-header-actions">
-              <button type="button" className="ghost" onClick={() => setIsSidebarOpen((prev) => !prev)}>{isSidebarOpen ? 'Скрыть панель' : 'Показать панель'}</button>
-              <button type="button" className="ghost" onClick={() => navigate('/cabinet')}>Профиль</button>
-              <button type="button" className="ghost" onClick={() => void loadTasks(selectedTeamId, selectedProjectId)} disabled={!selectedTeamId || !selectedProjectId}>Обновить</button>
+            <div className="tasks-pro-header-actions">
+              <div className="view-segmented" role="tablist" aria-label="Представление задач">
+                {[
+                  { id: 'board', label: 'Доска' },
+                  { id: 'list', label: 'Список' },
+                  { id: 'calendar', label: 'Календарь' },
+                  { id: 'mindmap', label: 'Mind map' }
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={taskBoardView === item.id}
+                    className={`view-segment ${taskBoardView === item.id ? 'active' : ''}`}
+                    onClick={() => setTaskBoardView(item.id)}
+                    disabled={!selectedProjectId}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              <div className="tasks-pro-toolbar-row">
+                <div className="export-actions">
+                  <button type="button" className="ghost export-btn" onClick={handleExportCsv} disabled={!selectedProjectId || !filteredTasks.length} title="Экспорт в CSV">
+                    CSV
+                  </button>
+                  <button type="button" className="ghost export-btn" onClick={handleExportJson} disabled={!selectedProjectId || !filteredTasks.length} title="Экспорт в JSON">
+                    JSON
+                  </button>
+                </div>
+                <button type="button" className="ghost" onClick={() => setIsSidebarOpen((prev) => !prev)}>{isSidebarOpen ? 'Скрыть панель' : 'Панель'}</button>
+                <button type="button" className="ghost" onClick={() => navigate('/cabinet')}>Профиль</button>
+                <button type="button" className="ghost" onClick={() => void loadTasks(selectedTeamId, selectedProjectId)} disabled={!selectedTeamId || !selectedProjectId}>Обновить</button>
+              </div>
             </div>
-          </div>
+          </header>
 
           <div className="search-filter-bar">
             <input
@@ -1979,6 +2121,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
             </div>
           )}
 
+          <div className="task-view-surface">
+          {taskBoardView === 'board' && (
           <div className="task-board">
           {boardColumns.length === 0 ? (
             <p className="empty-state">Создайте первую колонку, чтобы начать работу с задачами.</p>
@@ -2135,6 +2279,139 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
             );
           })}
         </div>
+        )}
+        {taskBoardView === 'list' && (
+          <div className="task-list-view-wrap">
+            {boardColumns.length === 0 ? (
+              <p className="empty-state">Создайте первую колонку, чтобы начать работу с задачами.</p>
+            ) : listSortedTasks.length === 0 ? (
+              <p className="empty-state">Нет задач по текущим фильтрам.</p>
+            ) : (
+              <div className="task-table-scroll">
+                <table className="task-list-pro">
+                  <thead>
+                    <tr>
+                      <th className="task-list-col-check" aria-label="Выполнено" />
+                      <th>Задача</th>
+                      <th>Колонка</th>
+                      <th>Приоритет</th>
+                      <th>Срок</th>
+                      <th>Исполнитель</th>
+                      <th className="task-list-col-actions" aria-label="Действия" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {listSortedTasks.map((task) => {
+                      const st = String(task.status || '').trim();
+                      const colTitle = columnTitleById.get(st) || st || '—';
+                      return (
+                        <tr key={task.id} className={`task-list-row ${isTaskDone(task) ? 'completed' : ''} ${isTaskOverdue(task) ? 'overdue' : ''}`}>
+                          <td>
+                            <button
+                              type="button"
+                              className={`task-completion-toggle sm ${isTaskDone(task) ? 'done' : ''}`}
+                              onClick={() => void handleToggleTaskDone(task)}
+                              title={isTaskDone(task) ? 'Снять выполнение' : 'Выполнено'}
+                              aria-label={isTaskDone(task) ? 'Снять выполнение' : 'Отметить выполненной'}
+                            >
+                              <span className="task-completion-box" aria-hidden="true">
+                                {isTaskDone(task) && <span className="task-completion-mark" />}
+                              </span>
+                            </button>
+                          </td>
+                          <td>
+                            <strong className="task-list-title">{task.title}</strong>
+                            {task.description && <p className="task-list-desc">{task.description}</p>}
+                          </td>
+                          <td><span className="task-list-pill">{colTitle}</span></td>
+                          <td>{priorityLabel(task.priority)}</td>
+                          <td>{task.dueAt ? new Date(task.dueAt).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' }) : '—'}</td>
+                          <td>{task.assigneeUserId ? (assigneeLabelById.get(task.assigneeUserId) || task.assigneeName || task.assigneeUserId) : '—'}</td>
+                          <td>
+                            <button type="button" className="ghost task-list-open" onClick={() => handleEditTask(task)}>Открыть</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+        {taskBoardView === 'calendar' && (
+          <div className="task-calendar-wrap">
+            {boardColumns.length === 0 ? (
+              <p className="empty-state">Создайте колонки, чтобы назначать задачи.</p>
+            ) : (
+              <>
+                <div className="task-cal-nav">
+                  <button
+                    type="button"
+                    className="ghost task-cal-nav-btn"
+                    onClick={() => setCalendarCursor(new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() - 1, 1))}
+                    aria-label="Предыдущий месяц"
+                  >
+                    ←
+                  </button>
+                  <span className="task-cal-month">{calendarMonthLabel}</span>
+                  <button
+                    type="button"
+                    className="ghost task-cal-nav-btn"
+                    onClick={() => setCalendarCursor(new Date(calendarCursor.getFullYear(), calendarCursor.getMonth() + 1, 1))}
+                    aria-label="Следующий месяц"
+                  >
+                    →
+                  </button>
+                  <button type="button" className="ghost task-cal-today" onClick={() => setCalendarCursor(new Date())}>Сегодня</button>
+                </div>
+                <div className="task-cal-grid">
+                  {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((wd) => (
+                    <div key={wd} className="task-cal-weekday">{wd}</div>
+                  ))}
+                  {calendarCells.map((cell) => (
+                    <div key={cell.iso} className={`task-cal-cell ${cell.inMonth ? '' : 'out-month'}`}>
+                      <span className="task-cal-day-num">{cell.date.getDate()}</span>
+                      <div className="task-cal-tasks">
+                        {cell.tasks.slice(0, 4).map((t) => (
+                          <button
+                            key={t.id}
+                            type="button"
+                            className={`task-cal-pill ${isTaskDone(t) ? 'done' : ''} ${isTaskOverdue(t) ? 'overdue' : ''}`}
+                            onClick={() => handleEditTask(t)}
+                          >
+                            {(t.title || 'Задача').slice(0, 28)}{(t.title || '').length > 28 ? '…' : ''}
+                          </button>
+                        ))}
+                        {cell.tasks.length > 4 && (
+                          <span className="task-cal-more">+{cell.tasks.length - 4}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        {taskBoardView === 'mindmap' && (
+          <div className="task-mindmap-wrap">
+            {boardColumns.length === 0 ? (
+              <p className="empty-state">Добавьте колонки — mind map построит схему проекта → колонки → задачи. Режим «Рисовать» — отдельный слой поверх (whiteboard).</p>
+            ) : (
+              <TaskMindMapPanel
+                storageKey={selectedTeamId && selectedProjectId ? `taskMindMap:${selectedTeamId}:${selectedProjectId}` : ''}
+                projectLabel={activeProject?.name || activeProject?.title || 'Проект'}
+                columns={boardColumns}
+                tasksByColumn={tasksByColumn}
+                onOpenTask={handleEditTask}
+                isTaskDone={isTaskDone}
+                isTaskOverdue={isTaskOverdue}
+              />
+            )}
+          </div>
+        )}
+          </div>
         </div>
 
         {selectedMemberStats && (

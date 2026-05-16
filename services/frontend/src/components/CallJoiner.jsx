@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { VideoCall } from './VideoCall';
+import { getLastVideoCallId, setLastVideoCallId } from '../lib/lastVideoCallId';
 import '../styles/CallJoiner.css';
 
 /**
@@ -11,31 +12,35 @@ export function CallJoiner({
   token,
   apiBase = '/api',
   initialCallId,
-  onError
+  onError,
+  showNotification
 }) {
   const params = useParams();
   const paramCallId = params?.callId || '';
-  const [callId, setCallId] = useState(initialCallId || paramCallId || '');
+  const [callId, setCallId] = useState(() => {
+    const fromProp = (initialCallId || '').trim();
+    const fromRoute = (paramCallId || '').trim();
+    if (fromProp) return fromProp;
+    if (fromRoute) return fromRoute;
+    return getLastVideoCallId();
+  });
   const [loading, setLoading] = useState(!!(initialCallId || paramCallId));
   const [error, setError] = useState(null);
   const [activeCall, setActiveCall] = useState(null);
 
-  // Auto-join if initialCallId prop or route param is provided
   useEffect(() => {
-    const idToJoin = initialCallId || paramCallId;
-    // Wait until we have a userId (profile loaded) before auto-joining,
-    // otherwise we can't determine initiator role correctly.
-    if (idToJoin && !activeCall && userId) {
-      handleJoinCall(null, idToJoin);
+    const fromRoute = (initialCallId || paramCallId || '').trim();
+    if (fromRoute) {
+      setCallId(fromRoute);
     }
-  }, [initialCallId, paramCallId, activeCall, userId]);
+  }, [initialCallId, paramCallId]);
 
   const handleJoinCall = async (e, joinIdOverride = null) => {
     if (e) e.preventDefault();
 
-    const idToUse = joinIdOverride || callId;
+    const idToUse = (joinIdOverride || callId || '').trim();
 
-    if (!idToUse.trim()) {
+    if (!idToUse) {
       setError('Введите ID встречи');
       return;
     }
@@ -58,6 +63,7 @@ export function CallJoiner({
       }
 
       const callData = await response.json();
+      setLastVideoCallId(idToUse);
       setActiveCall({
         id: callData.id,
         iceServers: callData.ice_servers || [
@@ -66,15 +72,24 @@ export function CallJoiner({
         initiatorId: callData.initiator_id,
         isInitiator: callData.initiator_id === userId
       });
-    } catch (error) {
-      console.error('Error joining call:', error);
-      const message = error.message || 'Не удалось присоединиться к встрече';
+    } catch (err) {
+      console.error('Error joining call:', err);
+      const message = err.message || 'Не удалось присоединиться к встрече';
       setError(message);
       onError?.(message);
     } finally {
       setLoading(false);
     }
   };
+
+  // Auto-join if initialCallId prop or route param is provided
+  useEffect(() => {
+    const idToJoin = (initialCallId || paramCallId || '').trim();
+    if (idToJoin && !activeCall && userId) {
+      void handleJoinCall(null, idToJoin);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mirror original: join from route once userId is ready
+  }, [initialCallId, paramCallId, activeCall, userId]);
 
   if (activeCall) {
     return (
@@ -84,6 +99,7 @@ export function CallJoiner({
         token={token}
         apiBase={apiBase}
         isInitiator={!!activeCall.isInitiator}
+        showNotification={showNotification}
         onCallEnd={() => setActiveCall(null)}
       />
     );
@@ -116,7 +132,7 @@ export function CallJoiner({
         </form>
 
         <div className="join-info">
-          <p>Введите ID встречи, который вам предоставил организатор, или перейдите по ссылке приглашения.</p>
+          <p>Введите ID встречи, который вам предоставил организатор, или перейдите по ссылке приглашения. Последний использованный ID подставляется автоматически.</p>
         </div>
       </article>
     </section>

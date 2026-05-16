@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { request } from '../lib/api';
 import { normalizeURL } from '../lib/url';
 
-export function CabinetSettings({ profile, accessToken, apiBase, showNotification, onProfileUpdate, onUpdateAccessToken }) {
+export function CabinetSettings({ profile, accessToken, apiBase, showNotification, onProfileUpdate, onUpdateAccessToken, uiTheme, setUiTheme }) {
   const navigate = useNavigate();
   const [formData, setFormData] = useState({
     name: profile?.name || '',
@@ -87,6 +87,28 @@ export function CabinetSettings({ profile, accessToken, apiBase, showNotificatio
           <p className="section-label">НАСТРОЙКИ ПРОФИЛЯ</p>
           <h2>Изменить профиль</h2>
           <p className="section-text">Основную почту менять нельзя. Можно добавить тег для поиска, дополнительную почту и ссылки на публичные профили.</p>
+
+          <div className="cabinet-appearance">
+            <span>Оформление</span>
+            <div className="theme-segment" role="group" aria-label="Тема интерфейса">
+              <button
+                type="button"
+                className={uiTheme === 'dark' ? 'active' : ''}
+                onClick={() => setUiTheme?.('dark')}
+              >
+                Тёмная
+              </button>
+              <button
+                type="button"
+                className={uiTheme === 'light' ? 'active' : ''}
+                onClick={() => setUiTheme?.('light')}
+              >
+                Светлая
+              </button>
+            </div>
+            <p className="muted-caption">Настройка сохраняется в этом браузере.</p>
+          </div>
+
           <form onSubmit={handleSubmit} className="settings-form profile-form">
             <div className="profile-form-grid">
               <label>
