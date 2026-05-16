@@ -435,7 +435,7 @@ function App() {
     return (
       <>
         <section className="hero hero-home">
-          <p className="eyebrow">VG TASK SYSTEM</p>
+          <p className="eyebrow">Unified Task System</p>
           <h1>УПРАВЛЕНИЕ ЗАДАЧАМИ С АВТОМАТИЗАЦИЕЙ И СИНХРОНИЗАЦИЕЙ</h1>
           <p className="hero-note">
             Мы строим веб-приложение, где задачи, пользователи и события связаны в единую рабочую систему.
@@ -622,7 +622,7 @@ function App() {
     <div className="app">
       <header className="header-shell">
         <div className="nav-grid">
-          <div className="logo">VG TASK SYSTEM</div>
+          <div className="logo">Unified Task System</div>
           {navItems.map((item) => (
             <NavLink key={item.to} to={item.to} className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}>
               {item.label}

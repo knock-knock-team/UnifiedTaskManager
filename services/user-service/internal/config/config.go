@@ -42,7 +42,7 @@ func FromEnv() Config {
 
 	return Config{
 		HTTPAddr:                     getenv("HTTP_ADDR", ":8082"),
-		DatabaseURL:                  getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/vg_task_system?sslmode=disable"),
+		DatabaseURL:                  getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/unified_task_manager?sslmode=disable"),
 		UseInMemory:                  getenvBool("USE_IN_MEMORY", false),
 		AutoMigrate:                  getenvBool("AUTO_MIGRATE", true),
 		RabbitEnabled:                getenvBool("RABBITMQ_ENABLED", false),

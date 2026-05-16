@@ -21,7 +21,7 @@ type Config struct {
 func FromEnv() Config {
 	return Config{
 		HTTPAddr:        getenv("TASK_SERVICE_HTTP_ADDR", ":8083"),
-		DatabaseURL:     getenv("TASK_DATABASE_URL", getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/vg_task_system?sslmode=disable")),
+		DatabaseURL:     getenv("TASK_DATABASE_URL", getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/unified_task_manager?sslmode=disable")),
 		UseInMemory:     getenvBool("TASK_USE_IN_MEMORY", getenvBool("USE_IN_MEMORY", false)),
 		AutoMigrate:     getenvBool("TASK_AUTO_MIGRATE", getenvBool("AUTO_MIGRATE", true)),
 		JWTSecret:       getenv("JWT_SECRET", ""),
