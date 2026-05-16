@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"vg-task-system/services/user-service/internal/model"
-	"vg-task-system/services/user-service/internal/repository"
+	"UnifiedTaskManager/services/user-service/internal/model"
+	"UnifiedTaskManager/services/user-service/internal/repository"
 )
 
 func newTestService() UserService {

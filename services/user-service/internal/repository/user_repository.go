@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"vg-task-system/services/user-service/internal/model"
+	"UnifiedTaskManager/services/user-service/internal/model"
 )
 
 var (

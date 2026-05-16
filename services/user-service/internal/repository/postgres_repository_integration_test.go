@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"vg-task-system/services/user-service/internal/model"
+	"UnifiedTaskManager/services/user-service/internal/model"
 )
 
 func TestPostgresRepositoryIntegrationCRUD(t *testing.T) {

@@ -17,8 +17,8 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"vg-task-system/services/user-service/internal/model"
-	"vg-task-system/services/user-service/internal/repository"
+	"UnifiedTaskManager/services/user-service/internal/model"
+	"UnifiedTaskManager/services/user-service/internal/repository"
 )
 
 var (

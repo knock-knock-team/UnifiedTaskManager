@@ -3,7 +3,7 @@ package event
 import (
 	"context"
 
-	"vg-task-system/services/user-service/internal/model"
+	"UnifiedTaskManager/services/user-service/internal/model"
 )
 
 type UserEventPublisher interface {

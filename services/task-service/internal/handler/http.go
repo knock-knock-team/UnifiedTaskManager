@@ -8,7 +8,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"UnifiedTaskManager/services/user-service/internal/model"
+	"UnifiedTaskManager/services/task-service/internal/model"
 )
 
 const (
@@ -22,10 +22,10 @@ type RabbitMQPublisher struct {
 	exchange string
 }
 
-type userEventPayload struct {
+type taskEventPayload struct {
 	EventType  string     `json:"eventType"`
 	OccurredAt time.Time  `json:"occurredAt"`
-	User       model.User `json:"user"`
+	Task       model.Task `json:"task"`
 }
 
 func NewRabbitMQPublisher(url, exchange string) (*RabbitMQPublisher, error) {
@@ -49,7 +49,6 @@ func NewRabbitMQPublisher(url, exchange string) (*RabbitMQPublisher, error) {
 		} else {
 			lastErr = err
 		}
-
 		if attempt < rabbitInitAttempts {
 			time.Sleep(rabbitInitDelay)
 		}
@@ -57,19 +56,23 @@ func NewRabbitMQPublisher(url, exchange string) (*RabbitMQPublisher, error) {
 	return nil, fmt.Errorf("rabbitmq init failed after %d attempts: %w", rabbitInitAttempts, lastErr)
 }
 
-func (p *RabbitMQPublisher) PublishUserCreated(ctx context.Context, user model.User) error {
-	return p.publish(ctx, "user.created", user)
+func (p *RabbitMQPublisher) PublishTaskCreated(ctx context.Context, task model.Task) error {
+	return p.publish(ctx, "task.created", task)
 }
 
-func (p *RabbitMQPublisher) PublishUserUpdated(ctx context.Context, user model.User) error {
-	return p.publish(ctx, "user.updated", user)
+func (p *RabbitMQPublisher) PublishTaskUpdated(ctx context.Context, task model.Task) error {
+	return p.publish(ctx, "task.updated", task)
 }
 
-func (p *RabbitMQPublisher) publish(ctx context.Context, routingKey string, user model.User) error {
-	payload := userEventPayload{
+func (p *RabbitMQPublisher) PublishTaskDeleted(ctx context.Context, task model.Task) error {
+	return p.publish(ctx, "task.deleted", task)
+}
+
+func (p *RabbitMQPublisher) publish(ctx context.Context, routingKey string, task model.Task) error {
+	payload := taskEventPayload{
 		EventType:  routingKey,
 		OccurredAt: time.Now().UTC(),
-		User:       user,
+		Task:       task,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

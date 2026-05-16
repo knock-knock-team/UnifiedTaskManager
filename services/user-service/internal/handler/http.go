@@ -13,8 +13,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"vg-task-system/services/user-service/internal/repository"
-	"vg-task-system/services/user-service/internal/service"
+	"UnifiedTaskManager/services/user-service/internal/repository"
+	"UnifiedTaskManager/services/user-service/internal/service"
 )
 
 type contextKey string

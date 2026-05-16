@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"vg-task-system/services/user-service/internal/model"
-	"vg-task-system/services/user-service/internal/repository"
-	"vg-task-system/services/user-service/internal/service"
+	"UnifiedTaskManager/services/user-service/internal/model"
+	"UnifiedTaskManager/services/user-service/internal/repository"
+	"UnifiedTaskManager/services/user-service/internal/service"
 )
 
 func newIntegrationServer(t *testing.T) (*httptest.Server, *repository.InMemoryUserRepository, service.UserService) {

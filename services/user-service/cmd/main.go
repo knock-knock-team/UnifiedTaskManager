@@ -5,11 +5,11 @@ import (
 	"log"
 	"time"
 
-	"vg-task-system/services/user-service/internal/config"
-	"vg-task-system/services/user-service/internal/event"
-	"vg-task-system/services/user-service/internal/handler"
-	"vg-task-system/services/user-service/internal/repository"
-	"vg-task-system/services/user-service/internal/service"
+	"UnifiedTaskManager/services/user-service/internal/config"
+	"UnifiedTaskManager/services/user-service/internal/event"
+	"UnifiedTaskManager/services/user-service/internal/handler"
+	"UnifiedTaskManager/services/user-service/internal/repository"
+	"UnifiedTaskManager/services/user-service/internal/service"
 )
 
 func main() {

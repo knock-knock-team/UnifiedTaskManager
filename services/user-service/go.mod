@@ -1,4 +1,4 @@
-module vg-task-system/services/user-service
+module UnifiedTaskManager/services/user-service
 
 go 1.22
 

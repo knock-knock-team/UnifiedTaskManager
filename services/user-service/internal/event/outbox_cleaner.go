@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"vg-task-system/services/user-service/internal/repository"
+	"UnifiedTaskManager/services/user-service/internal/repository"
 )
 
 type OutboxCleaner struct {
