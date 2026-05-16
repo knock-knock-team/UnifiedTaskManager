@@ -13,6 +13,7 @@ export function FileEnvironments({ apiBase, accessToken, onUpdateAccessToken, sh
   const [directoryItemsByPath, setDirectoryItemsByPath] = useState({ '.': [] });
   const [loadedDirectoryPaths, setLoadedDirectoryPaths] = useState({ '.': false });
   const [isBusy, setIsBusy] = useState(false);
+  const [isOpeningEnvironment, setIsOpeningEnvironment] = useState(false);
   const [openEntryMenuPath, setOpenEntryMenuPath] = useState('');
   const [expandedDirectoryPaths, setExpandedDirectoryPaths] = useState({ '.': true });
   function formatFileError(error, fallbackMessage) {
@@ -50,6 +51,12 @@ export function FileEnvironments({ apiBase, accessToken, onUpdateAccessToken, sh
   async function ensureAndOpenEnvironment(scope, targetDirectory = '.') {
     if (!scope) return;
     setIsBusy(true);
+    setIsOpeningEnvironment(true);
+    setEnvironmentInfo(null);
+    setDirectoryItemsByPath({ '.': [] });
+    setLoadedDirectoryPaths({ '.': false });
+    setSelectedEntryPath('');
+    setOpenEntryMenuPath('');
     try {
       const data = await requestFn(
         apiBase,
@@ -70,6 +77,7 @@ export function FileEnvironments({ apiBase, accessToken, onUpdateAccessToken, sh
     } catch (error) {
       showNotification(formatFileError(error, 'Не удалось получить среду'), 'error');
     } finally {
+      setIsOpeningEnvironment(false);
       setIsBusy(false);
     }
   }
@@ -151,6 +159,7 @@ export function FileEnvironments({ apiBase, accessToken, onUpdateAccessToken, sh
       setNewFolderPath('');
       setDirectoryItemsByPath({ '.': [] });
       setLoadedDirectoryPaths({ '.': false });
+      setIsOpeningEnvironment(false);
     }
   }, [selectedEnvironment]);
 
@@ -482,7 +491,9 @@ export function FileEnvironments({ apiBase, accessToken, onUpdateAccessToken, sh
           <article className="pane file-env-picker-pane">
             <p className="section-label">Файловые среды</p>
             {isLoadingEnvironments ? (
-              <p className="muted-caption">Загружаем команды и проекты…</p>
+              <div className="file-env-grid file-env-grid-skeleton" aria-label="Загружаем команды и проекты">
+                {[0, 1, 2].map((item) => <span key={item} className="file-env-card-skeleton" />)}
+              </div>
             ) : environments.length === 0 ? (
               <p className="empty-state hub-view-empty">Нет доступных команд или проектов. После создания проекта файловые среды подключатся автоматически.</p>
             ) : (
@@ -505,21 +516,21 @@ export function FileEnvironments({ apiBase, accessToken, onUpdateAccessToken, sh
           </article>
         </div>
 
-        {environmentInfo && (
-          <div className="section-block">
-            <article className="pane">
-              <div className="file-env-meta-grid">
-                <p><strong>Среда:</strong> {selectedEnvironment?.teamName || 'Команда'} / {selectedEnvironment?.projectName || 'Проект'}</p>
-                <p>
-                  <strong>Участники:</strong>{' '}
-                  {(environmentInfo.member_user_ids || [])
+        <div className="section-block file-env-meta-section">
+          <article className={`pane file-env-meta-pane ${isOpeningEnvironment ? 'loading' : ''}`}>
+            <div className="file-env-meta-grid">
+              <p><strong>Среда:</strong> {selectedEnvironment ? `${selectedEnvironment.teamName || 'Команда'} / ${selectedEnvironment.projectName || 'Проект'}` : 'Выберите среду'}</p>
+              <p>
+                <strong>Участники:</strong>{' '}
+                {environmentInfo
+                  ? ((environmentInfo.member_user_ids || [])
                     .map((id) => memberNamesById[String(id)] || String(id))
-                    .join(', ') || 'Только вы'}
-                </p>
-              </div>
-            </article>
-          </div>
-        )}
+                    .join(', ') || 'Только вы')
+                  : (selectedEnvironment ? 'Загружаем доступ...' : '—')}
+              </p>
+            </div>
+          </article>
+        </div>
 
         <div className="section-block">
           <article className="pane file-controls-pane">
@@ -578,6 +589,10 @@ export function FileEnvironments({ apiBase, accessToken, onUpdateAccessToken, sh
             <p className="section-label">Содержимое</p>
             {!selectedEnvironment ? (
               <p className="empty-state hub-view-empty">Выберите среду в блоке выше.</p>
+            ) : isOpeningEnvironment && fileTreeNodes.length === 0 ? (
+              <div className="file-entry-list file-tree-list file-tree-skeleton" aria-label="Загружаем содержимое файловой среды">
+                {[0, 1, 2, 3].map((item) => <span key={item} className="file-entry-skeleton" />)}
+              </div>
             ) : fileTreeNodes.length === 0 ? (
               <p className="empty-state hub-view-empty">Здесь пока пусто. Создайте папку или загрузите файл.</p>
             ) : (

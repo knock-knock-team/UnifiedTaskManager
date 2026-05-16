@@ -241,33 +241,35 @@ function App() {
       </header>
 
       <main id="main-content" className="container page-shell" tabIndex={-1}>
-        <Routes>
-          <Route path="/" element={<HomePage isAuthorized={isAuthorized} />} />
-          <Route path="/register" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <RegisterPage onRegister={onRegister} />} />
-          <Route path="/login" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <LoginPage onLogin={onLogin} />} />
-          <Route path="/tasks" element={<ProtectedRoute isAuthorized={isAuthorized}><TasksPage accessToken={accessToken} apiBase={apiBase} taskApiBase={storage.taskApiBase} profile={profile} showNotification={showNotification} onUpdateAccessToken={onUpdateAccessToken} /></ProtectedRoute>} />
-          <Route path="/chats" element={<ProtectedRoute isAuthorized={isAuthorized}><ChatPage accessToken={accessToken} apiBase={apiBase} profile={profile} showNotification={showNotification} onUpdateAccessToken={onUpdateAccessToken} /></ProtectedRoute>} />
-          <Route path="/calls" element={<ProtectedRoute isAuthorized={isAuthorized}><CallHome userId={profile?.id} token={accessToken} apiBase={apiBase} showNotification={showNotification} /></ProtectedRoute>} />
-          <Route path="/calls/created/:callId" element={<ProtectedRoute isAuthorized={isAuthorized}><CallCreated userId={profile?.id} token={accessToken} apiBase={apiBase} showNotification={showNotification} /></ProtectedRoute>} />
-          <Route path="/calls/join/:callId" element={<ProtectedRoute isAuthorized={isAuthorized}><CallJoiner userId={profile?.id} token={accessToken} apiBase={apiBase} showNotification={showNotification} /></ProtectedRoute>} />
-          <Route
-            path="/files"
-            element={(
-              <ProtectedRoute isAuthorized={isAuthorized}>
-                <FileEnvironments
-                  apiBase={apiBase}
-                  accessToken={accessToken}
-                  onUpdateAccessToken={onUpdateAccessToken}
-                  showNotification={showNotification}
-                  requestFn={request}
-                />
-              </ProtectedRoute>
-            )}
-          />
-          <Route path="/cabinet" element={<ProtectedRoute isAuthorized={isAuthorized}><CabinetOverviewPage accessToken={accessToken} apiBase={apiBase} taskApiBase={storage.taskApiBase} onUpdateAccessToken={onUpdateAccessToken} profile={profile} showNotification={showNotification} onLogout={onLogout} /></ProtectedRoute>} />
-          <Route path="/cabinet/settings" element={<ProtectedRoute isAuthorized={isAuthorized}><CabinetSettingsPage profile={profile} accessToken={accessToken} apiBase={apiBase} showNotification={showNotification} onProfileUpdate={setProfile} onUpdateAccessToken={onUpdateAccessToken} uiTheme={uiTheme} setUiTheme={setUiTheme} /></ProtectedRoute>} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        <div key={location.pathname} className="route-transition">
+          <Routes>
+            <Route path="/" element={<HomePage isAuthorized={isAuthorized} />} />
+            <Route path="/register" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <RegisterPage onRegister={onRegister} />} />
+            <Route path="/login" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <LoginPage onLogin={onLogin} />} />
+            <Route path="/tasks" element={<ProtectedRoute isAuthorized={isAuthorized}><TasksPage accessToken={accessToken} apiBase={apiBase} taskApiBase={storage.taskApiBase} profile={profile} showNotification={showNotification} onUpdateAccessToken={onUpdateAccessToken} /></ProtectedRoute>} />
+            <Route path="/chats" element={<ProtectedRoute isAuthorized={isAuthorized}><ChatPage accessToken={accessToken} apiBase={apiBase} profile={profile} showNotification={showNotification} onUpdateAccessToken={onUpdateAccessToken} /></ProtectedRoute>} />
+            <Route path="/calls" element={<ProtectedRoute isAuthorized={isAuthorized}><CallHome userId={profile?.id} token={accessToken} apiBase={apiBase} showNotification={showNotification} /></ProtectedRoute>} />
+            <Route path="/calls/created/:callId" element={<ProtectedRoute isAuthorized={isAuthorized}><CallCreated userId={profile?.id} token={accessToken} apiBase={apiBase} showNotification={showNotification} /></ProtectedRoute>} />
+            <Route path="/calls/join/:callId" element={<ProtectedRoute isAuthorized={isAuthorized}><CallJoiner userId={profile?.id} token={accessToken} apiBase={apiBase} showNotification={showNotification} /></ProtectedRoute>} />
+            <Route
+              path="/files"
+              element={(
+                <ProtectedRoute isAuthorized={isAuthorized}>
+                  <FileEnvironments
+                    apiBase={apiBase}
+                    accessToken={accessToken}
+                    onUpdateAccessToken={onUpdateAccessToken}
+                    showNotification={showNotification}
+                    requestFn={request}
+                  />
+                </ProtectedRoute>
+              )}
+            />
+            <Route path="/cabinet" element={<ProtectedRoute isAuthorized={isAuthorized}><CabinetOverviewPage accessToken={accessToken} apiBase={apiBase} taskApiBase={storage.taskApiBase} onUpdateAccessToken={onUpdateAccessToken} profile={profile} showNotification={showNotification} onLogout={onLogout} /></ProtectedRoute>} />
+            <Route path="/cabinet/settings" element={<ProtectedRoute isAuthorized={isAuthorized}><CabinetSettingsPage profile={profile} accessToken={accessToken} apiBase={apiBase} showNotification={showNotification} onProfileUpdate={setProfile} onUpdateAccessToken={onUpdateAccessToken} uiTheme={uiTheme} setUiTheme={setUiTheme} /></ProtectedRoute>} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </div>
       </main>
 
       <AgentChatDrawer
