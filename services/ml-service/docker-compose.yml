@@ -1,7 +1,7 @@
 services:
   ml-service:
     image: ml-service
-    env_file: .env.production
+    env_file: .env
     build:
       context: ../..
       dockerfile: services/ml-service/Dockerfile
