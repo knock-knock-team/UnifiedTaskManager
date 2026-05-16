@@ -1,0 +1,165 @@
+export function normalizeApiBase(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '/api';
+  const lower = raw.toLowerCase();
+  const legacyValues = [
+    '/api/user-service',
+    '/api/task-service',
+    'localhost:8082',
+    '127.0.0.1:8082',
+    'http://localhost:8082',
+    'https://localhost:8082',
+    'http://127.0.0.1:8082',
+    'https://127.0.0.1:8082',
+    'localhost:8083',
+    '127.0.0.1:8083',
+    'http://localhost:8083',
+    'https://localhost:8083',
+    'http://127.0.0.1:8083',
+    'https://127.0.0.1:8083'
+  ];
+  if (legacyValues.some((item) => lower === item || lower.startsWith(`${item}/`))) {
+    return '/api';
+  }
+  return raw;
+}
+
+export const storage = {
+  get apiBase() {
+    return normalizeApiBase(localStorage.getItem('apiBase'));
+  },
+  set apiBase(value) {
+    localStorage.setItem('apiBase', normalizeApiBase(value));
+  },
+  get taskApiBase() {
+    return normalizeApiBase(localStorage.getItem('taskApiBase'));
+  },
+  set taskApiBase(value) {
+    localStorage.setItem('taskApiBase', normalizeApiBase(value));
+  },
+  get taskTeamId() {
+    return localStorage.getItem('taskTeamId') || '';
+  },
+  set taskTeamId(value) {
+    localStorage.setItem('taskTeamId', value || '');
+  },
+  get taskProjectId() {
+    return localStorage.getItem('taskProjectId') || '';
+  },
+  set taskProjectId(value) {
+    localStorage.setItem('taskProjectId', value || '');
+  },
+  get accessToken() {
+    return localStorage.getItem('accessToken') || '';
+  },
+  set accessToken(value) {
+    localStorage.setItem('accessToken', value || '');
+  },
+  get refreshToken() {
+    return localStorage.getItem('refreshToken') || '';
+  },
+  set refreshToken(value) {
+    localStorage.setItem('refreshToken', value || '');
+  },
+  clearTokens() {
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
+  }
+};
+
+let refreshPromise = null;
+
+async function refreshAccessToken(apiBase, refreshToken) {
+  if (!refreshToken) {
+    throw new Error('invalid token');
+  }
+
+  // Prevent multiple simultaneous refresh attempts
+  if (refreshPromise) {
+    return refreshPromise;
+  }
+
+  refreshPromise = (async () => {
+    try {
+      const response = await fetch(`${apiBase}/v1/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken })
+      });
+
+      let data = {};
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Token refresh failed');
+      }
+
+      storage.accessToken = data.tokens.accessToken;
+      storage.refreshToken = data.tokens.refreshToken;
+      return data.tokens.accessToken;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
+}
+
+export async function request(apiBase, accessToken, path, options = {}, onTokenRefresh) {
+  const { method = 'GET', body, auth = false, headers: extraHeaders = {} } = options;
+  const headers = { 'Content-Type': 'application/json', ...extraHeaders };
+
+  if (auth && accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
+  let response = await fetch(`${apiBase}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined
+  });
+
+  // Handle 401 Unauthorized - try to refresh token
+  if (response.status === 401 && auth && onTokenRefresh) {
+    const refreshToken = storage.refreshToken;
+    if (refreshToken) {
+      try {
+        const newAccessToken = await refreshAccessToken(apiBase, refreshToken);
+        onTokenRefresh(newAccessToken);
+
+        // Retry request with new token
+        headers.Authorization = `Bearer ${newAccessToken}`;
+        response = await fetch(`${apiBase}${path}`, {
+          method,
+          headers,
+          body: body ? JSON.stringify(body) : undefined
+        });
+      } catch (err) {
+        // Refresh failed - user must login again
+        storage.clearTokens();
+        onTokenRefresh(null);
+        throw new Error('Сессия истекла. Пожалуйста, авторизируйтесь снова.');
+      }
+    } else {
+      storage.clearTokens();
+      throw new Error('Сессия истекла. Пожалуйста, авторизируйтесь снова.');
+    }
+  }
+
+  let data = {};
+  try {
+    data = await response.json();
+  } catch {
+    data = {};
+  }
+
+  if (!response.ok) {
+    throw new Error(data.message || `HTTP ${response.status}`);
+  }
+
+  return data;
+}

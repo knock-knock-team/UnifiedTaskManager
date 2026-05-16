@@ -1,0 +1,158 @@
+/* Call Joiner Styles - Site Theme */
+
+.join-form {
+  margin-bottom: 20px;
+}
+
+.join-form input {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--line);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  color: var(--txt);
+  font-size: 16px;
+  font-family: 'Courier New', monospace;
+  transition: all 0.3s ease;
+  box-sizing: border-box;
+}
+
+.join-form input:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.join-form input::placeholder {
+  color: var(--muted);
+}
+
+.join-info {
+  margin-top: 20px;
+  padding: 16px;
+  background: rgba(245, 87, 108, 0.1);
+  border: 1px solid rgba(245, 87, 108, 0.2);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #f5576c;
+  box-shadow: 0 0 0 3px rgba(245, 87, 108, 0.1);
+}
+
+.form-group input:disabled {
+  background: #f5f5f5;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.join-call-btn {
+  width: 100%;
+  padding: 12px 24px;
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 12px rgba(245, 87, 108, 0.4);
+  margin-bottom: 30px;
+}
+
+.join-call-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(245, 87, 108, 0.6);
+}
+
+.join-call-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.join-call-btn:disabled {
+  opacity: 0.8;
+  cursor: not-allowed;
+}
+
+.error-message {
+  margin-bottom: 24px;
+  padding: 12px 16px;
+  background: #fee;
+  border-left: 4px solid #f44;
+  border-radius: 4px;
+  color: #c33;
+  font-size: 14px;
+}
+
+.error-message p {
+  margin: 0;
+}
+
+/* Info Section */
+
+.info-section {
+  padding-top: 24px;
+  border-top: 2px solid #eee;
+}
+
+.info-section h3 {
+  margin: 0 0 16px 0;
+  color: #333;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.info-section ol {
+  margin: 0;
+  padding-left: 20px;
+  color: #666;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.info-section li {
+  margin-bottom: 8px;
+}
+
+/* Responsive */
+
+@media (max-width: 480px) {
+  .receiver-card {
+    padding: 24px;
+  }
+
+  .receiver-card h2 {
+    font-size: 24px;
+    margin-bottom: 24px;
+  }
+
+  .form-group input {
+    padding: 10px 12px;
+    font-size: 16px; /* Prevents zoom on iOS */
+  }
+
+  .join-call-btn {
+    padding: 10px 20px;
+    font-size: 14px;
+    margin-bottom: 24px;
+  }
+
+  .info-section {
+    padding-top: 18px;
+  }
+
+  .info-section h3 {
+    font-size: 14px;
+    margin-bottom: 12px;
+  }
+
+  .info-section ol {
+    font-size: 13px;
+    padding-left: 18px;
+  }
+}

@@ -1,0 +1,358 @@
+/* Video Call Styles */
+
+.video-call {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #000;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+}
+
+.video-container {
+  flex: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.participants-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-rows: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+  padding: 8px;
+  background: #000;
+}
+
+.participant-tile {
+  position: relative;
+  background: #1a1a1a;
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.participant-tile.local {
+  border: 2px solid #007bff;
+}
+
+.participant-tile.remote {
+  border: 1px solid #333;
+}
+
+.participant-tile.empty {
+  background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%);
+  opacity: 0.5;
+}
+
+.video-track {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-track video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.video-label {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  background: rgba(0, 0, 0, 0.8);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  color: #fff;
+}
+
+.video-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%);
+  color: #999;
+  font-size: 16px;
+  text-align: center;
+  padding: 20px;
+}
+
+/* Call Info */
+
+.call-info {
+  padding: 0 20px;
+  height: 60px;
+  background: rgba(0, 0, 0, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid #333;
+}
+
+.call-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.status-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+
+.status-indicator.new {
+  background: #ffd700;
+}
+
+.status-indicator.connecting {
+  background: #ffaa00;
+}
+
+.status-indicator.connected {
+  background: #00ff00;
+}
+
+.status-indicator.active {
+  background: #00ff00;
+}
+
+.status-indicator.failed {
+  background: #ff0000;
+}
+
+.status-indicator.disconnected {
+  background: #ff0000;
+}
+
+.status-indicator.closed {
+  background: #666;
+}
+
+.status-text {
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+}
+
+.duration {
+  margin-left: auto;
+  font-size: 16px;
+  font-weight: bold;
+  font-family: 'Courier New', monospace;
+}
+
+.participants-count {
+  background: rgba(0, 123, 255, 0.2);
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #007bff;
+  border: 1px solid #007bff;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(0, 255, 0, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(0, 255, 0, 0);
+  }
+}
+
+/* Controls */
+
+.call-controls {
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.95);
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  border-top: 1px solid #333;
+}
+
+.control-btn {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  font-size: 28px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  background: #4a4a4a;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.control-btn:hover {
+  transform: scale(1.1);
+  background: #555;
+}
+
+.control-btn.active {
+  background: #00aa00;
+}
+
+.control-btn.active:hover {
+  background: #00cc00;
+}
+
+.control-btn.inactive {
+  background: #aa0000;
+  opacity: 0.8;
+}
+
+.control-btn.inactive:hover {
+  background: #cc0000;
+  opacity: 1;
+}
+
+.control-btn.end-call {
+  background: #cc0000;
+  width: 60px;
+  height: 60px;
+  font-size: 32px;
+}
+
+.control-btn.end-call:hover {
+  background: #ff0000;
+  box-shadow: 0 4px 16px rgba(255, 0, 0, 0.4);
+}
+
+.control-btn.info-btn {
+  width: auto;
+  border-radius: 4px;
+  padding: 0 12px;
+  font-size: 14px;
+  background: #1e7ceb;
+  white-space: nowrap;
+}
+
+.control-btn.info-btn:hover {
+  background: #2a88f5;
+  transform: scale(1.05);
+}
+
+/* Error Banner */
+
+.error-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: #cc0000;
+  color: white;
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.error-banner p {
+  margin: 0;
+  flex: 1;
+}
+
+.error-banner button {
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  color: white;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: 16px;
+  font-size: 14px;
+  transition: all 0.3s ease;
+}
+
+.error-banner button:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Responsive */
+
+@media (max-width: 768px) {
+  .video-wrapper.local {
+    width: 120px;
+    height: 160px;
+    bottom: 100px;
+    right: 10px;
+  }
+
+  .call-controls {
+    gap: 12px;
+    padding: 16px;
+  }
+
+  .control-btn {
+    width: 48px;
+    height: 48px;
+    font-size: 24px;
+  }
+
+  .control-btn.end-call {
+    width: 52px;
+    height: 52px;
+    font-size: 28px;
+  }
+
+  .video-label {
+    font-size: 10px;
+  }
+
+  .status-text {
+    font-size: 11px;
+  }
+
+  .duration {
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  .video-wrapper.local {
+    width: 100px;
+    height: 140px;
+    bottom: 90px;
+  }
+
+  .call-controls {
+    gap: 8px;
+  }
+
+  .control-btn {
+    width: 44px;
+    height: 44px;
+    font-size: 20px;
+  }
+
+  .call-info {
+    height: 50px;
+    padding: 0 12px;
+  }
+}
