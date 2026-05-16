@@ -1,0 +1,10 @@
+services:
+  ml-service:
+    image: ml-service
+    env_file: .env.production
+    build:
+      context: ../..
+      dockerfile: services/ml-service/Dockerfile
+    container_name: ml-service
+    ports:
+      - "8087:8087"
