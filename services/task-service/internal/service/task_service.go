@@ -16,22 +16,26 @@ var ErrForbidden = errors.New("forbidden")
 var ErrUpstream = errors.New("upstream dependency failed")
 
 type CreateTaskInput struct {
-	Title       string
-	Description string
-	Status      string
-	Priority    string
-	DueAt       *time.Time
-	CreatedBy   string
-	TeamID      string
-	ProjectID   string
+	Title          string
+	Description    string
+	Status         string
+	Priority       string
+	DueAt          *time.Time
+	CreatedBy      string
+	AssigneeUserID string
+	AssigneeName   string
+	TeamID         string
+	ProjectID      string
 }
 
 type UpdateTaskInput struct {
-	Title       *string    `json:"title"`
-	Description *string    `json:"description"`
-	Status      *string    `json:"status"`
-	Priority    *string    `json:"priority"`
-	DueAt       *time.Time `json:"dueAt"`
+	Title          *string    `json:"title"`
+	Description    *string    `json:"description"`
+	Status         *string    `json:"status"`
+	Priority       *string    `json:"priority"`
+	DueAt          *time.Time `json:"dueAt"`
+	AssigneeUserID *string    `json:"assigneeUserId"`
+	AssigneeName   *string    `json:"assigneeName"`
 }
 
 type CreateColumnInput struct {
@@ -48,12 +52,16 @@ type CreateCommentInput struct {
 }
 
 type TaskService struct {
-	repo      repository.TaskStore
-	publisher event.TaskEventPublisher
+	repo          repository.TaskStore
+	publisher     event.TaskEventPublisher
+	userDirectory UserDirectory
 }
 
-func NewTaskService(repo repository.TaskStore, publisher event.TaskEventPublisher) *TaskService {
-	return &TaskService{repo: repo, publisher: publisher}
+func NewTaskService(repo repository.TaskStore, publisher event.TaskEventPublisher, userDirectory UserDirectory) *TaskService {
+	if userDirectory == nil {
+		userDirectory = NewNoopUserDirectory()
+	}
+	return &TaskService{repo: repo, publisher: publisher, userDirectory: userDirectory}
 }
 
 func (s *TaskService) Create(input CreateTaskInput) (model.Task, error) {
@@ -70,20 +78,32 @@ func (s *TaskService) Create(input CreateTaskInput) (model.Task, error) {
 	if createdBy == "" {
 		createdBy = "anonymous"
 	}
+	assigneeUserID := strings.TrimSpace(input.AssigneeUserID)
+	if assigneeUserID != "" {
+		exists, err := s.userDirectory.UserExists(context.Background(), assigneeUserID)
+		if err != nil {
+			return model.Task{}, ErrUpstream
+		}
+		if !exists {
+			return model.Task{}, ErrBadRequest
+		}
+	}
 
 	now := time.Now().UTC()
 	task := model.Task{
-		ID:          newID(),
-		Title:       title,
-		Description: strings.TrimSpace(input.Description),
-		Status:      normalizeStatus(input.Status),
-		Priority:    normalizePriority(input.Priority),
-		DueAt:       input.DueAt,
-		CreatedBy:   createdBy,
-		TeamID:      teamID,
-		ProjectID:   projectID,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:             newID(),
+		Title:          title,
+		Description:    strings.TrimSpace(input.Description),
+		Status:         normalizeStatus(input.Status),
+		Priority:       normalizePriority(input.Priority),
+		DueAt:          input.DueAt,
+		CreatedBy:      createdBy,
+		AssigneeUserID: assigneeUserID,
+		AssigneeName:   strings.TrimSpace(input.AssigneeName),
+		TeamID:         teamID,
+		ProjectID:      projectID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	created, err := s.repo.Create(task)
 	if err != nil {
@@ -141,6 +161,22 @@ func (s *TaskService) Update(id string, input UpdateTaskInput) (model.Task, erro
 	}
 	if input.DueAt != nil {
 		current.DueAt = input.DueAt
+	}
+	if input.AssigneeUserID != nil {
+		assigneeUserID := strings.TrimSpace(*input.AssigneeUserID)
+		if assigneeUserID != "" {
+			exists, err := s.userDirectory.UserExists(context.Background(), assigneeUserID)
+			if err != nil {
+				return model.Task{}, ErrUpstream
+			}
+			if !exists {
+				return model.Task{}, ErrBadRequest
+			}
+		}
+		current.AssigneeUserID = assigneeUserID
+	}
+	if input.AssigneeName != nil {
+		current.AssigneeName = strings.TrimSpace(*input.AssigneeName)
 	}
 	current.UpdatedAt = time.Now().UTC()
 
@@ -216,6 +252,26 @@ func (s *TaskService) MarkCommentsRead(taskID, userID string) error {
 		return ErrBadRequest
 	}
 	return s.repo.MarkTaskCommentsRead(taskID, userID, time.Now().UTC())
+}
+
+func (s *TaskService) DeleteComment(taskID, commentID, userID string) error {
+	taskID = strings.TrimSpace(taskID)
+	commentID = strings.TrimSpace(commentID)
+	userID = strings.TrimSpace(userID)
+	if taskID == "" || commentID == "" || userID == "" {
+		return ErrBadRequest
+	}
+	comment, err := s.repo.GetCommentByID(commentID)
+	if err != nil {
+		return err
+	}
+	if comment.TaskID != taskID {
+		return ErrBadRequest
+	}
+	if comment.UserID != userID {
+		return ErrForbidden
+	}
+	return s.repo.DeleteComment(commentID)
 }
 
 func (s *TaskService) ListUnreadCommentCounts(taskIDs []string, userID string) (map[string]int, error) {

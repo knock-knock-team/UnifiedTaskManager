@@ -26,6 +26,8 @@ type Task struct {
 	Priority       TaskPriority `json:"priority"`
 	DueAt          *time.Time   `json:"dueAt,omitempty"`
 	CreatedBy      string       `json:"createdBy"`
+	AssigneeUserID string       `json:"assigneeUserId,omitempty"`
+	AssigneeName   string       `json:"assigneeName,omitempty"`
 	TeamID         string       `json:"teamId,omitempty"`
 	ProjectID      string       `json:"projectId,omitempty"`
 	UnreadComments int          `json:"unreadComments,omitempty"`

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"UnifiedTaskManager/services/task-service/internal/model"
@@ -34,6 +35,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 	priority TEXT NOT NULL,
 	due_at TIMESTAMPTZ NULL,
 	created_by TEXT NOT NULL,
+	assignee_user_id TEXT NOT NULL DEFAULT '',
+	assignee_name TEXT NOT NULL DEFAULT '',
 	team_id TEXT NOT NULL DEFAULT '',
 	project_id TEXT NOT NULL DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL,
@@ -47,6 +50,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS team_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assignee_user_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assignee_name TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS task_columns (
 	id TEXT PRIMARY KEY,
@@ -85,8 +90,8 @@ CREATE TABLE IF NOT EXISTS task_comment_reads (
 
 func (r *PostgresTaskRepository) Create(task model.Task) (model.Task, error) {
 	const q = `
-INSERT INTO tasks (id, title, description, status, priority, due_at, created_by, team_id, project_id, created_at, updated_at, deleted_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL)`
+INSERT INTO tasks (id, title, description, status, priority, due_at, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, deleted_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULL)`
 
 	_, err := r.db.Exec(context.Background(), q,
 		task.ID,
@@ -96,6 +101,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL)`
 		string(task.Priority),
 		task.DueAt,
 		task.CreatedBy,
+		task.AssigneeUserID,
+		task.AssigneeName,
 		task.TeamID,
 		task.ProjectID,
 		task.CreatedAt,
@@ -109,7 +116,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL)`
 
 func (r *PostgresTaskRepository) GetByID(id string) (model.Task, error) {
 	const q = `
-SELECT id, title, description, status, priority, due_at, created_by, team_id, project_id, created_at, updated_at, deleted_at
+SELECT id, title, description, status, priority, due_at, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, deleted_at
 FROM tasks
 WHERE id = $1 AND deleted_at IS NULL`
 
@@ -155,7 +162,7 @@ WHERE deleted_at IS NULL
 	AND (LOWER(title) LIKE $4 OR LOWER(description) LIKE $4)`
 
 	const listQ = `
-SELECT id, title, description, status, priority, due_at, created_by, team_id, project_id, created_at, updated_at, deleted_at
+SELECT id, title, description, status, priority, due_at, created_by, assignee_user_id, assignee_name, team_id, project_id, created_at, updated_at, deleted_at
 FROM tasks
 WHERE deleted_at IS NULL
   AND ($1 = '' OR created_by = $1)
@@ -199,7 +206,9 @@ SET title = $2,
 	status = $4,
 	priority = $5,
 	due_at = $6,
-	updated_at = $7
+	assignee_user_id = $7,
+	assignee_name = $8,
+	updated_at = $9
 WHERE id = $1 AND deleted_at IS NULL`
 
 	res, err := r.db.Exec(context.Background(), q,
@@ -209,6 +218,8 @@ WHERE id = $1 AND deleted_at IS NULL`
 		string(task.Status),
 		string(task.Priority),
 		task.DueAt,
+		task.AssigneeUserID,
+		task.AssigneeName,
 		task.UpdatedAt,
 	)
 	if err != nil {
@@ -402,6 +413,45 @@ ORDER BY created_at ASC`
 	return items, nil
 }
 
+func (r *PostgresTaskRepository) GetCommentByID(commentID string) (model.TaskComment, error) {
+	const q = `
+SELECT id, task_id, user_id, author_name, body, created_at
+FROM task_comments
+WHERE id = $1`
+
+	var item model.TaskComment
+	err := r.db.QueryRow(context.Background(), q, strings.TrimSpace(commentID)).Scan(
+		&item.ID,
+		&item.TaskID,
+		&item.UserID,
+		&item.AuthorName,
+		&item.Body,
+		&item.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.TaskComment{}, ErrNotFound
+		}
+		return model.TaskComment{}, err
+	}
+	return item, nil
+}
+
+func (r *PostgresTaskRepository) DeleteComment(commentID string) error {
+	const q = `
+DELETE FROM task_comments
+WHERE id = $1`
+
+	res, err := r.db.Exec(context.Background(), q, strings.TrimSpace(commentID))
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (r *PostgresTaskRepository) MarkTaskCommentsRead(taskID, userID string, readAt time.Time) error {
 	const q = `
 INSERT INTO task_comment_reads (task_id, user_id, last_read_at)
@@ -495,6 +545,8 @@ func scanTask(row scanner) (model.Task, error) {
 		&priority,
 		&task.DueAt,
 		&task.CreatedBy,
+		&task.AssigneeUserID,
+		&task.AssigneeName,
 		&task.TeamID,
 		&task.ProjectID,
 		&task.CreatedAt,

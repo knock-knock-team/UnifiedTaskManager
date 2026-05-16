@@ -29,6 +29,8 @@ type TaskStore interface {
 	CountByProjectAndStatus(projectID, status string) (int, error)
 	CreateComment(comment model.TaskComment) (model.TaskComment, error)
 	ListCommentsByTaskID(taskID string) ([]model.TaskComment, error)
+	GetCommentByID(commentID string) (model.TaskComment, error)
+	DeleteComment(commentID string) error
 	MarkTaskCommentsRead(taskID, userID string, readAt time.Time) error
 	ListUnreadCommentCounts(taskIDs []string, userID string) (map[string]int, error)
 	Update(task model.Task) (model.Task, error)
@@ -242,6 +244,36 @@ func (r *InMemoryTaskRepository) ListCommentsByTaskID(taskID string) ([]model.Ta
 		return items[i].CreatedAt.Before(items[j].CreatedAt)
 	})
 	return items, nil
+}
+
+func (r *InMemoryTaskRepository) GetCommentByID(commentID string) (model.TaskComment, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	commentID = strings.TrimSpace(commentID)
+	for _, items := range r.comments {
+		for _, item := range items {
+			if item.ID == commentID {
+				return item, nil
+			}
+		}
+	}
+	return model.TaskComment{}, ErrNotFound
+}
+
+func (r *InMemoryTaskRepository) DeleteComment(commentID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	commentID = strings.TrimSpace(commentID)
+	for taskID, items := range r.comments {
+		for index := range items {
+			if items[index].ID != commentID {
+				continue
+			}
+			r.comments[taskID] = append(items[:index], items[index+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
 }
 
 func (r *InMemoryTaskRepository) MarkTaskCommentsRead(taskID, userID string, readAt time.Time) error {

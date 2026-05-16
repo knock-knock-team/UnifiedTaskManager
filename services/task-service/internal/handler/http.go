@@ -1,108 +1,637 @@
-package event
+package handler
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
-	amqp "github.com/rabbitmq/amqp091-go"
-
-	"UnifiedTaskManager/services/task-service/internal/model"
+	"UnifiedTaskManager/services/task-service/internal/repository"
+	"UnifiedTaskManager/services/task-service/internal/service"
 )
+
+type contextKey string
 
 const (
-	rabbitInitAttempts = 20
-	rabbitInitDelay    = 2 * time.Second
+	ctxUserIDKey contextKey = "userID"
+	ctxRoleKey   contextKey = "role"
+	ctxTeamIDKey contextKey = "teamID"
+	ctxTokenKey  contextKey = "token"
 )
 
-type RabbitMQPublisher struct {
-	conn     *amqp.Connection
-	ch       *amqp.Channel
-	exchange string
+type HTTPHandler struct {
+	svc         *service.TaskService
+	ping        func(context.Context) error
+	tokens      *service.TokenManager
+	permissions *service.PermissionClient
+	allowOrigin string
 }
 
-type taskEventPayload struct {
-	EventType  string     `json:"eventType"`
-	OccurredAt time.Time  `json:"occurredAt"`
-	Task       model.Task `json:"task"`
+func NewHTTPHandler(svc *service.TaskService, ping func(context.Context) error, tokens *service.TokenManager, permissions *service.PermissionClient) *HTTPHandler {
+	return &HTTPHandler{svc: svc, ping: ping, tokens: tokens, permissions: permissions, allowOrigin: "*"}
 }
 
-func NewRabbitMQPublisher(url, exchange string) (*RabbitMQPublisher, error) {
-	var lastErr error
-	for attempt := 1; attempt <= rabbitInitAttempts; attempt++ {
-		conn, err := amqp.Dial(url)
-		if err == nil {
-			ch, err := conn.Channel()
-			if err == nil {
-				exchangeErr := ch.ExchangeDeclare(exchange, "topic", true, false, false, false, nil)
-				if exchangeErr == nil {
-					return &RabbitMQPublisher{conn: conn, ch: ch, exchange: exchange}, nil
-				}
-				_ = ch.Close()
-				_ = conn.Close()
-				lastErr = exchangeErr
-			} else {
-				_ = conn.Close()
-				lastErr = err
-			}
-		} else {
-			lastErr = err
+func (h *HTTPHandler) SetCORSAllowOrigin(origin string) {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		origin = "*"
+	}
+	h.allowOrigin = origin
+}
+
+func (h *HTTPHandler) Routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", h.healthz)
+	mux.HandleFunc("/readyz", h.readyz)
+	mux.HandleFunc("/v1/task-columns", h.auth(h.taskColumns))
+	mux.HandleFunc("/v1/task-columns/", h.auth(h.taskColumnByID))
+	mux.HandleFunc("/v1/tasks", h.auth(h.tasks))
+	mux.HandleFunc("/v1/tasks/", h.auth(h.taskByID))
+	return h.withCORS(mux)
+}
+
+func (h *HTTPHandler) Run(addr string) error {
+	return http.ListenAndServe(addr, h.Routes())
+}
+
+func (h *HTTPHandler) healthz(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *HTTPHandler) readyz(w http.ResponseWriter, r *http.Request) {
+	if h.ping == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	if err := h.ping(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "not ready"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func (h *HTTPHandler) withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := h.allowOrigin
+		if origin == "" {
+			origin = "*"
 		}
-		if attempt < rabbitInitAttempts {
-			time.Sleep(rabbitInitDelay)
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Team-Id")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
 		}
-	}
-	return nil, fmt.Errorf("rabbitmq init failed after %d attempts: %w", rabbitInitAttempts, lastErr)
-}
-
-func (p *RabbitMQPublisher) PublishTaskCreated(ctx context.Context, task model.Task) error {
-	return p.publish(ctx, "task.created", task)
-}
-
-func (p *RabbitMQPublisher) PublishTaskUpdated(ctx context.Context, task model.Task) error {
-	return p.publish(ctx, "task.updated", task)
-}
-
-func (p *RabbitMQPublisher) PublishTaskDeleted(ctx context.Context, task model.Task) error {
-	return p.publish(ctx, "task.deleted", task)
-}
-
-func (p *RabbitMQPublisher) publish(ctx context.Context, routingKey string, task model.Task) error {
-	payload := taskEventPayload{
-		EventType:  routingKey,
-		OccurredAt: time.Now().UTC(),
-		Task:       task,
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	return p.ch.PublishWithContext(ctx, p.exchange, routingKey, false, false, amqp.Publishing{
-		ContentType:  "application/json",
-		DeliveryMode: amqp.Persistent,
-		Timestamp:    time.Now().UTC(),
-		Body:         body,
+		next.ServeHTTP(w, r)
 	})
 }
 
-func (p *RabbitMQPublisher) Close() error {
-	if p == nil {
+func (h *HTTPHandler) auth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		header := strings.TrimSpace(r.Header.Get("Authorization"))
+		if !strings.HasPrefix(strings.ToLower(header), "bearer ") {
+			writeError(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+		token := strings.TrimSpace(header[len("Bearer "):])
+		claims, err := h.tokens.Parse(token, "access")
+		if err != nil || claims.Subject == "" {
+			writeError(w, http.StatusUnauthorized, "Invalid token")
+			return
+		}
+
+		availableTeams := normalizeTeamIDs(claims.TeamIDs)
+		if strings.TrimSpace(claims.TeamID) != "" {
+			availableTeams = appendIfMissing(availableTeams, strings.TrimSpace(claims.TeamID))
+		}
+
+		requestedTeamID := strings.TrimSpace(r.Header.Get("X-Team-Id"))
+		activeTeamID := strings.TrimSpace(claims.TeamID)
+		if len(availableTeams) == 1 && activeTeamID == "" {
+			activeTeamID = availableTeams[0]
+		}
+		if requestedTeamID != "" {
+			// Team membership is validated by user-service permissions check.
+			// This keeps access working right after creating a new team before token refresh.
+			activeTeamID = requestedTeamID
+		}
+		ctx := context.WithValue(r.Context(), ctxUserIDKey, claims.Subject)
+		ctx = context.WithValue(ctx, ctxRoleKey, claims.Role)
+		ctx = context.WithValue(ctx, ctxTeamIDKey, activeTeamID)
+		ctx = context.WithValue(ctx, ctxTokenKey, token)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	}
+}
+
+func (h *HTTPHandler) tasks(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.listTasks(w, r)
+	case http.MethodPost:
+		h.createTask(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *HTTPHandler) taskColumns(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(r.URL.Query().Get("action")) == "reorder" {
+		h.reorderTaskColumns(w, r)
+		return
+	}
+	projectID := strings.TrimSpace(r.URL.Query().Get("projectId"))
+	teamID := strings.TrimSpace(currentTeamID(r.Context()))
+	if teamID == "" || projectID == "" {
+		writeError(w, http.StatusBadRequest, "teamId and projectId are required")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		if !h.ensureProjectPermission(w, r, teamID, projectID, "tasks.read") {
+			return
+		}
+		items, err := h.svc.ListColumnsByProject(projectID)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	case http.MethodPost:
+		if !h.ensureProjectPermission(w, r, teamID, projectID, "tasks.write") {
+			return
+		}
+		var req struct {
+			Title string `json:"title"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		item, err := h.svc.CreateColumn(service.CreateColumnInput{TeamID: teamID, ProjectID: projectID, Title: req.Title})
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, item)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *HTTPHandler) reorderTaskColumns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	projectID := strings.TrimSpace(r.URL.Query().Get("projectId"))
+	teamID := strings.TrimSpace(currentTeamID(r.Context()))
+	if teamID == "" || projectID == "" {
+		writeError(w, http.StatusBadRequest, "teamId and projectId are required")
+		return
+	}
+	if !h.ensureProjectPermission(w, r, teamID, projectID, "tasks.write") {
+		return
+	}
+
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.svc.ReorderColumns(projectID, req.IDs); err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	items, err := h.svc.ListColumnsByProject(projectID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *HTTPHandler) taskColumnByID(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/task-columns/")
+	id = strings.TrimSpace(id)
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "column id is required")
+		return
+	}
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	column, err := h.svc.GetColumnByID(id)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	if !h.ensureProjectPermission(w, r, column.TeamID, column.ProjectID, "tasks.write") {
+		return
+	}
+	if err := h.svc.DeleteColumn(id); err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HTTPHandler) taskByID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/v1/tasks/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	id := strings.TrimSpace(parts[0])
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "task id is required")
+		return
+	}
+	if len(parts) >= 2 {
+		switch parts[1] {
+		case "comments":
+			if len(parts) == 2 {
+				h.taskComments(w, r, id)
+				return
+			}
+			if len(parts) == 3 && parts[2] == "read" {
+				h.taskCommentsRead(w, r, id)
+				return
+			}
+			if len(parts) == 3 && r.Method == http.MethodDelete {
+				h.taskCommentByID(w, r, id, strings.TrimSpace(parts[2]))
+				return
+			}
+		}
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		task, err := h.svc.GetByID(id)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		if comments, err := h.svc.ListUnreadCommentCounts([]string{task.ID}, currentUserID(r.Context())); err == nil {
+			task.UnreadComments = comments[task.ID]
+		}
+		if !h.ensureProjectPermission(w, r, task.TeamID, task.ProjectID, "tasks.read") {
+			return
+		}
+		writeJSON(w, http.StatusOK, task)
+	case http.MethodPatch:
+		task, err := h.svc.GetByID(id)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		if !h.ensureProjectPermission(w, r, task.TeamID, task.ProjectID, "tasks.write") {
+			return
+		}
+		h.updateTask(w, r, id)
+	case http.MethodDelete:
+		task, err := h.svc.GetByID(id)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		if !h.ensureProjectPermission(w, r, task.TeamID, task.ProjectID, "tasks.write") {
+			return
+		}
+		if err := h.svc.Delete(id); err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *HTTPHandler) createTask(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Title          string     `json:"title"`
+		Description    string     `json:"description"`
+		Status         string     `json:"status"`
+		Priority       string     `json:"priority"`
+		DueAt          *time.Time `json:"dueAt"`
+		AssigneeUserID string     `json:"assigneeUserId"`
+		AssigneeName   string     `json:"assigneeName"`
+		ProjectID      string     `json:"projectId"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	teamID := strings.TrimSpace(currentTeamID(r.Context()))
+	if teamID == "" {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if strings.TrimSpace(req.ProjectID) == "" {
+		writeError(w, http.StatusBadRequest, "projectId is required")
+		return
+	}
+	if !h.ensureProjectPermission(w, r, teamID, req.ProjectID, "tasks.write") {
+		return
+	}
+
+	task, err := h.svc.Create(service.CreateTaskInput{
+		Title:          req.Title,
+		Description:    req.Description,
+		Status:         req.Status,
+		Priority:       req.Priority,
+		DueAt:          req.DueAt,
+		CreatedBy:      currentUserID(r.Context()),
+		AssigneeUserID: req.AssigneeUserID,
+		AssigneeName:   req.AssigneeName,
+		TeamID:         teamID,
+		ProjectID:      req.ProjectID,
+	})
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, task)
+}
+
+func (h *HTTPHandler) listTasks(w http.ResponseWriter, r *http.Request) {
+	limit := parseInt(r.URL.Query().Get("limit"), 20)
+	offset := parseInt(r.URL.Query().Get("offset"), 0)
+	search := r.URL.Query().Get("search")
+	projectID := strings.TrimSpace(r.URL.Query().Get("projectId"))
+	teamID := strings.TrimSpace(currentTeamID(r.Context()))
+	if teamID == "" {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if projectID == "" {
+		writeError(w, http.StatusBadRequest, "projectId is required")
+		return
+	}
+	if !h.ensureProjectPermission(w, r, teamID, projectID, "tasks.read") {
+		return
+	}
+
+	items, total, err := h.svc.ListByProject(projectID, limit, offset, search)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	if len(items) > 0 {
+		taskIDs := make([]string, 0, len(items))
+		for _, item := range items {
+			taskIDs = append(taskIDs, item.ID)
+		}
+		if counts, err := h.svc.ListUnreadCommentCounts(taskIDs, currentUserID(r.Context())); err == nil {
+			for index := range items {
+				items[index].UnreadComments = counts[items[index].ID]
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  items,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
+
+func (h *HTTPHandler) updateTask(w http.ResponseWriter, r *http.Request, id string) {
+	var req struct {
+		Title          *string    `json:"title"`
+		Description    *string    `json:"description"`
+		Status         *string    `json:"status"`
+		Priority       *string    `json:"priority"`
+		DueAt          *time.Time `json:"dueAt"`
+		AssigneeUserID *string    `json:"assigneeUserId"`
+		AssigneeName   *string    `json:"assigneeName"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	updated, err := h.svc.Update(id, service.UpdateTaskInput{
+		Title:          req.Title,
+		Description:    req.Description,
+		Status:         req.Status,
+		Priority:       req.Priority,
+		DueAt:          req.DueAt,
+		AssigneeUserID: req.AssigneeUserID,
+		AssigneeName:   req.AssigneeName,
+	})
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (h *HTTPHandler) taskComments(w http.ResponseWriter, r *http.Request, taskID string) {
+	task, err := h.svc.GetByID(taskID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	if !h.ensureProjectPermission(w, r, task.TeamID, task.ProjectID, "tasks.read") {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		items, err := h.svc.ListComments(taskID)
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	case http.MethodPost:
+		if !h.ensureProjectPermission(w, r, task.TeamID, task.ProjectID, "tasks.write") {
+			return
+		}
+		var req struct {
+			Body       string `json:"body"`
+			AuthorName string `json:"authorName"`
+		}
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		comment, err := h.svc.AddComment(service.CreateCommentInput{
+			TaskID:     taskID,
+			UserID:     currentUserID(r.Context()),
+			AuthorName: req.AuthorName,
+			Body:       req.Body,
+		})
+		if err != nil {
+			h.writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, comment)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *HTTPHandler) taskCommentsRead(w http.ResponseWriter, r *http.Request, taskID string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	task, err := h.svc.GetByID(taskID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	if !h.ensureProjectPermission(w, r, task.TeamID, task.ProjectID, "tasks.read") {
+		return
+	}
+	if err := h.svc.MarkCommentsRead(taskID, currentUserID(r.Context())); err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HTTPHandler) taskCommentByID(w http.ResponseWriter, r *http.Request, taskID, commentID string) {
+	if strings.TrimSpace(commentID) == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	task, err := h.svc.GetByID(taskID)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	if !h.ensureProjectPermission(w, r, task.TeamID, task.ProjectID, "tasks.write") {
+		return
+	}
+	if err := h.svc.DeleteComment(taskID, commentID, currentUserID(r.Context())); err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HTTPHandler) writeServiceError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, service.ErrBadRequest):
+		writeError(w, http.StatusBadRequest, "bad request")
+	case errors.Is(err, service.ErrUpstream):
+		writeError(w, http.StatusBadGateway, "dependency unavailable")
+	case errors.Is(err, service.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, repository.ErrNotFound):
+		writeError(w, http.StatusNotFound, "task not found")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal server error")
+	}
+}
+
+func parseInt(value string, fallback int) int {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	defer r.Body.Close()
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return false
+	}
+	return true
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"message": message})
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func currentUserID(ctx context.Context) string {
+	value, _ := ctx.Value(ctxUserIDKey).(string)
+	return value
+}
+
+func currentRole(ctx context.Context) string {
+	value, _ := ctx.Value(ctxRoleKey).(string)
+	return value
+}
+
+func currentTeamID(ctx context.Context) string {
+	value, _ := ctx.Value(ctxTeamIDKey).(string)
+	return value
+}
+
+func currentAccessToken(ctx context.Context) string {
+	value, _ := ctx.Value(ctxTokenKey).(string)
+	return value
+}
+
+func (h *HTTPHandler) ensureProjectPermission(w http.ResponseWriter, r *http.Request, teamID, projectID, permission string) bool {
+	if h.permissions == nil {
+		writeError(w, http.StatusBadGateway, "dependency unavailable")
+		return false
+	}
+	allowed, err := h.permissions.CheckProjectPermission(r.Context(), currentAccessToken(r.Context()), teamID, projectID, permission)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "dependency unavailable")
+		return false
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return false
+	}
+	return true
+}
+
+func normalizeTeamIDs(values []string) []string {
+	if len(values) == 0 {
 		return nil
 	}
-	var firstErr error
-	if p.ch != nil {
-		if err := p.ch.Close(); err != nil {
-			firstErr = err
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		result = appendIfMissing(result, v)
+	}
+	return result
+}
+
+func appendIfMissing(values []string, value string) []string {
+	if containsString(values, value) {
+		return values
+	}
+	return append(values, value)
+}
+
+func containsString(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
 		}
 	}
-	if p.conn != nil {
-		if err := p.conn.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	if firstErr != nil {
-		return fmt.Errorf("rabbitmq close: %w", firstErr)
-	}
-	return nil
+	return false
 }
