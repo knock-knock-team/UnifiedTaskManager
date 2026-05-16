@@ -181,6 +181,78 @@ impl ChatRepository for PgChatRepository {
         Ok(rows.into_iter().map(|(user_id,)| user_id).collect())
     }
 
+    async fn add_room_members(
+        &self,
+        room_id: Uuid,
+        participant_ids: &[Uuid],
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now();
+        let mut tx = self.pool.begin().await?;
+
+        for &user_id in participant_ids {
+            sqlx::query(
+                r#"
+                INSERT INTO chat_room_members (room_id, user_id, joined_at)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (room_id, user_id) DO NOTHING
+                "#,
+            )
+            .bind(room_id)
+            .bind(user_id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE chat_rooms
+            SET updated_at = $1
+            WHERE id = $2
+            "#,
+        )
+        .bind(now)
+        .bind(room_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn remove_room_member(&self, room_id: Uuid, user_id: Uuid) -> Result<bool, sqlx::Error> {
+        let now = Utc::now();
+        let mut tx = self.pool.begin().await?;
+
+        let result = sqlx::query(
+            r#"
+            DELETE FROM chat_room_members
+            WHERE room_id = $1 AND user_id = $2
+            "#,
+        )
+        .bind(room_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+        if result.rows_affected() > 0 {
+            sqlx::query(
+                r#"
+                UPDATE chat_rooms
+                SET updated_at = $1
+                WHERE id = $2
+                "#,
+            )
+            .bind(now)
+            .bind(room_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn is_member(&self, room_id: Uuid, user_id: Uuid) -> Result<bool, sqlx::Error> {
         let row: (bool,) = sqlx::query_as(
             r#"
@@ -284,6 +356,5 @@ impl ChatRepository for PgChatRepository {
                 edited_at: row.edited_at,
             })
             .collect())
-
     }
 }

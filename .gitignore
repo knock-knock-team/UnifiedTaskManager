@@ -15,6 +15,7 @@ coverage.out
 # Binaries
 bin/
 dist/
+**target/
 
 # IDE
 .vscode/

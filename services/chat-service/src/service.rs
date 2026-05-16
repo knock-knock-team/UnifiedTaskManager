@@ -119,6 +119,144 @@ impl ChatService {
         })
     }
 
+    pub async fn add_participants(
+        &self,
+        actor_id: Uuid,
+        room_id: Uuid,
+        mut participant_ids: Vec<Uuid>,
+    ) -> Result<ChatRoomDetails, AppError> {
+        let is_member = self
+            .repo
+            .is_member(room_id, actor_id)
+            .await
+            .map_err(AppError::Db)?;
+
+        if !is_member {
+            return Err(AppError::NotFound);
+        }
+
+        participant_ids.sort_unstable();
+        participant_ids.dedup();
+        participant_ids.retain(|user_id| *user_id != actor_id);
+
+        if participant_ids.is_empty() {
+            return Err(AppError::Validation(
+                "at least one other participant is required".to_string(),
+            ));
+        }
+
+        for user_id in &participant_ids {
+            let exists = self
+                .users
+                .user_exists(*user_id)
+                .await
+                .map_err(AppError::Directory)?;
+
+            if !exists {
+                return Err(AppError::NotFound);
+            }
+        }
+
+        self.repo
+            .add_room_members(room_id, &participant_ids)
+            .await
+            .map_err(AppError::Db)?;
+
+        let room = self
+            .repo
+            .get_room_for_user(room_id, actor_id)
+            .await
+            .map_err(AppError::Db)?
+            .ok_or(AppError::NotFound)?;
+
+        let all_participants = self
+            .repo
+            .list_room_members(room_id)
+            .await
+            .map_err(AppError::Db)?;
+
+        let payload = json!({
+            "roomId": room_id,
+            "addedBy": actor_id,
+            "participantIds": participant_ids,
+            "updatedAt": room.updated_at,
+        });
+
+        self.publisher
+            .publish(&self.exchange, "chat.room.participants_added", payload)
+            .await
+            .map_err(AppError::Broker)?;
+
+        Ok(ChatRoomDetails {
+            room,
+            participant_ids: all_participants,
+        })
+    }
+
+    pub async fn remove_participant(
+        &self,
+        actor_id: Uuid,
+        room_id: Uuid,
+        participant_id: Uuid,
+    ) -> Result<ChatRoomDetails, AppError> {
+        let room = self
+            .repo
+            .get_room_for_user(room_id, actor_id)
+            .await
+            .map_err(AppError::Db)?
+            .ok_or(AppError::NotFound)?;
+
+        if room.created_by != actor_id {
+            return Err(AppError::Forbidden);
+        }
+
+        if participant_id == room.created_by {
+            return Err(AppError::Validation(
+                "room creator cannot be removed".to_string(),
+            ));
+        }
+
+        let removed = self
+            .repo
+            .remove_room_member(room_id, participant_id)
+            .await
+            .map_err(AppError::Db)?;
+
+        if !removed {
+            return Err(AppError::NotFound);
+        }
+
+        let room = self
+            .repo
+            .get_room_for_user(room_id, actor_id)
+            .await
+            .map_err(AppError::Db)?
+            .ok_or(AppError::NotFound)?;
+
+        let all_participants = self
+            .repo
+            .list_room_members(room_id)
+            .await
+            .map_err(AppError::Db)?;
+
+        let payload = json!({
+            "roomId": room_id,
+            "removedBy": actor_id,
+            "participantId": participant_id,
+            "updatedAt": room.updated_at,
+        });
+
+        self.publisher
+            .publish(&self.exchange, "chat.room.participant_removed", payload)
+            .await
+            .map_err(AppError::Broker)?;
+
+        Ok(ChatRoomDetails {
+            room,
+            participant_ids: all_participants,
+        })
+    }
+
     pub async fn send_message(
         &self,
         actor_id: Uuid,

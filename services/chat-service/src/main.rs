@@ -1,7 +1,13 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::Router;
 use dotenvy::dotenv;
+use lapin::{
+    options::ExchangeDeclareOptions,
+    types::FieldTable,
+    ExchangeKind,
+};
+use mq_rust::MqClient;
 use sqlx::migrate::Migrator;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -11,7 +17,10 @@ use tracing_subscriber::EnvFilter;
 
 use chat_service::{
     config::Settings,
-    infra::{postgres::PgChatRepository, rabbit::{NoopPublisher, NoopUserDirectory}},
+    infra::{
+        postgres::PgChatRepository,
+        rabbit::{RabbitPublisher, RabbitUserDirectory, USER_EXISTS_QUEUE},
+    },
     service::ChatService,
     web,
     AppState,
@@ -32,10 +41,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let repo = PgChatRepository::connect(&settings.database_url).await?;
     MIGRATOR.run(repo.pool()).await?;
 
+    let rabbitmq_url = std::env::var("RABBITMQ_URL")
+        .unwrap_or_else(|_| "amqp://127.0.0.1:5672/%2f".to_string());
+
+    let mq = MqClient::connect(&rabbitmq_url).await?;
+    let mq_channel = mq.channel().await?;
+    mq_channel
+        .exchange_declare(
+            settings.rabbitmq_exchange.as_str().into(),
+            ExchangeKind::Topic,
+            ExchangeDeclareOptions {
+                durable: true,
+                ..Default::default()
+            },
+            FieldTable::default(),
+        )
+        .await?;
+
     let chat = ChatService::new(
         Arc::new(repo),
-        Arc::new(NoopPublisher),
-        Arc::new(NoopUserDirectory),
+        Arc::new(RabbitPublisher::new(mq.clone())),
+        Arc::new(RabbitUserDirectory::new(
+            mq,
+            USER_EXISTS_QUEUE,
+            Duration::from_secs(2),
+        )),
         settings.rabbitmq_exchange.clone(),
     );
 

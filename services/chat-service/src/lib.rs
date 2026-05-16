@@ -17,7 +17,6 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(chat: ChatService) -> Self {
-
         Self {
             chat: Arc::new(chat),
         }

@@ -1,16 +1,17 @@
-FROM rust:1.85-alpine AS builder
+FROM rust:1.88-alpine AS builder
 
 RUN apk add --no-cache musl-dev pkgconfig openssl-dev
 
-WORKDIR /app
+WORKDIR /app/services/chat-service
 
-COPY Cargo.toml Cargo.lock ./
+COPY libs/mq-rust /app/libs/mq-rust
+COPY services/chat-service/Cargo.toml services/chat-service/Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 
 RUN cargo build --release
 RUN rm -rf src
 
-COPY . .
+COPY services/chat-service .
 
 RUN cargo build --release
 
@@ -21,9 +22,9 @@ RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/chat-service /app/chat-service
+COPY --from=builder /app/services/chat-service/target/release/chat-service /app/chat-service
 
-COPY --from=builder /app/migrations /app/migrations
+COPY --from=builder /app/services/chat-service/migrations /app/migrations
 
 ENV RUST_LOG=info
 

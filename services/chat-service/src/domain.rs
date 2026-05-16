@@ -4,7 +4,6 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
-
 pub struct ChatRoom {
     pub id: Uuid,
     pub title: Option<String>,

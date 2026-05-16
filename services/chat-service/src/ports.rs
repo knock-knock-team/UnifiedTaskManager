@@ -28,6 +28,18 @@ pub trait ChatRepository: Send + Sync {
 
     async fn list_room_members(&self, room_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error>;
 
+    async fn add_room_members(
+        &self,
+        room_id: Uuid,
+        participant_ids: &[Uuid],
+    ) -> Result<(), sqlx::Error>;
+
+    async fn remove_room_member(
+        &self,
+        room_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<bool, sqlx::Error>;
+
     async fn is_member(&self, room_id: Uuid, user_id: Uuid) -> Result<bool, sqlx::Error>;
 
     async fn create_message(
@@ -58,5 +70,4 @@ pub trait EventPublisher: Send + Sync {
 #[async_trait]
 pub trait UserDirectory: Send + Sync {
     async fn user_exists(&self, user_id: Uuid) -> Result<bool, String>;
-
 }

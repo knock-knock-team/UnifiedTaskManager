@@ -1,10 +1,10 @@
 openapi: 3.0.3
 info:
-  title: Unified Task System API
+  title: VG Task System API
   version: 0.1.0
   description: |
-    Initial API contract for user-service exposed via api-gateway.
-    This file currently contains only user-related endpoints.
+    Public API contract exposed through the API Gateway.
+    The gateway routes requests to user-service and task-service.
 
 servers:
   - url: /api
@@ -15,6 +15,8 @@ tags:
     description: User profile and account management
   - name: Auth
     description: Registration and authentication
+  - name: Chat Service
+    description: Chat rooms and messages
 
 security:
   - bearerAuth: []
@@ -217,6 +219,125 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/chats/rooms:
+    post:
+      tags: [Chat Service]
+      summary: Create a chat room
+      operationId: createChatRoom
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoomRequest'
+      responses:
+        '201':
+          description: Room created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetails'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    get:
+      tags: [Chat Service]
+      summary: List chat rooms for current user
+      operationId: listChatRooms
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Room list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/chats/rooms/{roomId}:
+    get:
+      tags: [Chat Service]
+      summary: Get room by id
+      operationId: getChatRoom
+      parameters:
+        - name: roomId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Room details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoomDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/chats/rooms/{roomId}/messages:
+    post:
+      tags: [Chat Service]
+      summary: Send a message to room
+      operationId: sendChatMessage
+      parameters:
+        - name: roomId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '201':
+          description: Message created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    get:
+      tags: [Chat Service]
+      summary: List messages in room
+      operationId: listChatMessages
+      parameters:
+        - name: roomId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Message list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -438,3 +559,94 @@ components:
           type: object
           additionalProperties: true
 
+    CreateRoomRequest:
+      type: object
+      required: [participantIds]
+      properties:
+        title:
+          type: string
+          maxLength: 120
+        participantIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          minItems: 1
+
+    SendMessageRequest:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: string
+          minLength: 1
+          maxLength: 4000
+
+    RoomDetails:
+      type: object
+      required: [id, createdBy, participantIds, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          nullable: true
+        createdBy:
+          type: string
+          format: uuid
+        participantIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    RoomListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoomDetails'
+
+    Message:
+      type: object
+      required: [id, roomId, senderUserId, body, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        roomId:
+          type: string
+          format: uuid
+        senderUserId:
+          type: string
+          format: uuid
+        body:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        editedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    MessageListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'

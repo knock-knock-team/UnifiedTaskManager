@@ -1,9 +1,10 @@
 [package]
 name = "chat-service"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
+mq-rust = { path = "../../libs/mq-rust" }
 axum = "0.8.8"
 tokio = { version = "1.51.1", features = ["macros", "rt-multi-thread", "signal", "net"] }
 
@@ -26,5 +27,5 @@ tower-http = { version = "0.6.8", features = ["cors", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
 dotenvy = "0.15.7"
-
 async-trait = "0.1.89"
+lapin = "4.4.0"

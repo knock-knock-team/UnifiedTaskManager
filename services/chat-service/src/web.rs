@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -18,10 +18,16 @@ use crate::{
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/readyz", get(readyz))
         .route("/v1/chats/rooms", post(create_room).get(list_rooms))
-        .route("/v1/chats/rooms/:room_id", get(get_room))
+        .route("/v1/chats/rooms/{room_id}", get(get_room))
+        .route("/v1/chats/rooms/{room_id}/participants", post(add_participants))
         .route(
-            "/v1/chats/rooms/:room_id/messages",
+            "/v1/chats/rooms/{room_id}/participants/{user_id}",
+            delete(remove_participant),
+        )
+        .route(
+            "/v1/chats/rooms/{room_id}/messages",
             post(send_message).get(list_messages),
         )
         .with_state(state)
@@ -29,6 +35,10 @@ pub fn router(state: AppState) -> Router {
 
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
+}
+
+async fn readyz() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({ "status": "ready" })))
 }
 
 fn current_user_id(headers: &HeaderMap) -> Result<Uuid, AppError> {
@@ -52,6 +62,13 @@ pub struct CreateRoomRequest {
 pub struct SendMessageRequest {
     #[validate(length(min = 1, max = 4000))]
     pub body: String,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+#[serde(rename_all = "camelCase")]
+pub struct AddParticipantsRequest {
+    #[validate(length(min = 1))]
+    pub participant_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,6 +227,39 @@ pub async fn send_message(
         .await?;
 
     Ok((StatusCode::CREATED, Json(message.into())))
+}
+
+pub async fn add_participants(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(room_id): Path<Uuid>,
+    Json(payload): Json<AddParticipantsRequest>,
+) -> Result<Json<RoomDetailsResponse>, AppError> {
+    payload
+        .validate()
+        .map_err(|err| AppError::Validation(err.to_string()))?;
+
+    let actor_id = current_user_id(&headers)?;
+    let room = state
+        .chat
+        .add_participants(actor_id, room_id, payload.participant_ids)
+        .await?;
+
+    Ok(Json(room.into()))
+}
+
+pub async fn remove_participant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((room_id, user_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<RoomDetailsResponse>, AppError> {
+    let actor_id = current_user_id(&headers)?;
+    let room = state
+        .chat
+        .remove_participant(actor_id, room_id, user_id)
+        .await?;
+
+    Ok(Json(room.into()))
 }
 
 pub async fn list_messages(
