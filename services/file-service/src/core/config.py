@@ -9,8 +9,8 @@ class Settings(BaseSettings):
     app_debug: bool = False
 
     file_service_http_addr: str = ":8088"
-    file_service_database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/vg_task_system"
-    file_service_storage_root: str = "/var/lib/vg-file-service/storage"
+    file_service_database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/UnifiedTaskManager"
+    file_service_storage_root: str = "/var/lib/UnifiedTaskManager/storage"
 
     file_service_rabbitmq_enabled: bool = True
     file_service_rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
