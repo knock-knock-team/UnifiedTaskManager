@@ -1,7 +1,28 @@
 services:
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    env_file:
+      - ./.env
+    environment:
+      GATEWAY_HTTP_ADDR: :8081
+      GATEWAY_USER_SERVICE_URL: http://user-service:8082
+      GATEWAY_TASK_SERVICE_URL: http://task-service:8083
+      GATEWAY_CHAT_SERVICE_URL: http://chat-service:8084
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
+    ports:
+      - "8081:8081"
+    depends_on:
+      - user-service
+      - task-service
+      - chat-service
+
   postgres:
     image: postgres:16-alpine
-    container_name: vg-postgres
+    container_name: postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -18,7 +39,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
-    container_name: vg-rabbitmq
+    container_name: rabbitmq
     volumes:
       - ./rabbitmq.conf:/etc/rabbitmq/conf.d/10-local.conf:ro
     environment:
@@ -37,18 +58,44 @@ services:
     build:
       context: ./services/user-service
       dockerfile: Dockerfile
-    container_name: vg-user-service
+    container_name: user-service
     env_file:
       - ./.env
     environment:
       HTTP_ADDR: ${HTTP_ADDR}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672//
       USE_IN_MEMORY: ${USE_IN_MEMORY}
       AUTO_MIGRATE: ${AUTO_MIGRATE}
       CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
-    ports:
-      - "8082:8082"
+    expose:
+      - "8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  task-service:
+    build:
+      context: ./services/task-service
+      dockerfile: Dockerfile
+    container_name: task-service
+    env_file:
+      - ./.env
+    environment:
+      TASK_SERVICE_HTTP_ADDR: :8083
+      TASK_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      TASK_USE_IN_MEMORY: ${USE_IN_MEMORY}
+      TASK_AUTO_MIGRATE: ${AUTO_MIGRATE}
+      TASK_RABBITMQ_ENABLED: "true"
+      TASK_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      TASK_RABBITMQ_EXCHANGE: task.events
+      TASK_USER_SERVICE_URL: http://user-service:8082
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
+    expose:
+      - "8083"
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,11 +106,32 @@ services:
     build:
       context: ./services/frontend
       dockerfile: Dockerfile
-    container_name: vg-frontend
+    container_name: frontend
     ports:
       - "8080:80"
     depends_on:
-      - user-service
+      - api-gateway
+  
+  chat-service:
+    build:
+      context: .
+      dockerfile: services/chat-service/Dockerfile
+    container_name: chat-service
+    env_file:
+      - ./.env
+    environment:
+      CHAT_SERVICE_HTTP_ADDR: 0.0.0.0:8084
+      CHAT_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      CHAT_RABBITMQ_EXCHANGE: chat.events
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   postgres_data:
