@@ -1,19 +1,27 @@
-## Local Run
+# UnifiedTaskManager
 
-Use local development compose with source-based builds:
+Система управления задачами с AI-ассистентом и интеграцией GigaChat.
+
+## Возможности
+
+- создание команд и проектов для управления задачами;
+- автодополнение и встроенный AI-агент на основе GigaChat;
+- полная статистика по участникам проекта;
+- автоматические уведомления по дедлайнам;
+- интегрированное файловое пространство для каждого проекта;
+- аудиоконференции;
+- диалоги и групповые чаты.
+
+## Локальный запуск
+
+Для полного использования функционала сервиса необходимо получить пароль приложения для почты(например, Яндекс почта), а также API-ключ от модели(например, GigaChat).
 
 ```bash
 cp .env.example .env
 docker compose -f docker-compose.local.yml up --build -d
 ```
 
-This file is tuned for local work:
-
-- all app services are built from local sources with correct repository-root build context
-- `pull_policy: never` is enabled for built services, so Docker does not pull remote images and does not trigger unnecessary network rebuild flow
-- infra services (`postgres`, `rabbitmq`, `redis`, `coturn`) use published images as usual
-
-Main local endpoints:
+Основные эндпоинты:
 
 - Frontend: http://localhost:8080
 - API Gateway: http://localhost:8081
@@ -33,60 +41,6 @@ The local and production compose stacks include a self-hosted observability stac
 - Loki stores logs.
 - Promtail reads Docker container logs and nginx log files.
 - Grafana is provisioned with Prometheus and Loki datasources plus a starter dashboard.
-
-Useful checks:
-
-```bash
-docker compose -f docker-compose.local.yml config
-docker compose -f docker-compose.local.yml up -d prometheus loki promtail grafana
-curl http://localhost:8081/metrics
-```
-
-In Grafana, query logs with labels such as `{service="api-gateway"}` or `{service="frontend"}`. Production Grafana is attached only to the internal compose network by default; use an SSH tunnel or add protected reverse-proxy access if you need browser access on the server.
-
-Application services also emit structured `audit_event`, `security_event`, and `slow_http_request` logs. The slow request threshold is controlled by `SLOW_REQUEST_MS` (`750` by default, set `0` to disable).
-
-## Production Compose
-
-`docker-compose.yml` is registry-agnostic and defaults to GitLab Container Registry naming:
-
-- image format: `${CI_REGISTRY_IMAGE}/<service>:${IMAGE_TAG}`
-- fallback for standalone hosts: `registry.gitlab.com/knock-knock-team/unified-task-manager/<service>:${IMAGE_TAG}`
-- `pull_policy: always` is used for app services, so deployment hosts always take the exact pushed tag
-
-Production deploy is **automated with Ansible** from GitLab CI (see **`ansible/README.md`**). The job syncs `docker-compose.yml`, `deploy/nginx/default.conf`, renders `.env.production` from CI variables, then runs `docker compose --env-file .env.production pull` and `up`.
-
-## GitLab CI/CD
-
-Pipeline is fully moved to `.gitlab-ci.yml` with anti-rebuild rules:
-
-- pipelines run for **Merge Request** events, **tags**, and manual `Run pipeline`
-- test/build jobs are gated by `rules:changes`, so only affected services run
-- Docker images are **built for validation in MR** (no push)
-- Docker images are **built + pushed only on tags**
-- **`deploy_production`** (manual on tag) runs **Ansible** from the tagged tree: copies compose + nginx, writes `.env.production`, registry login, `docker compose` pull/up
-
-Required GitLab CI/CD variables for deploy are listed in **`ansible/README.md`** (SSH + secrets). Built-in `CI_REGISTRY_*` and `CI_COMMIT_TAG` are supplied by GitLab automatically.
-
-## File Service API
-
-`file-service` is available through API gateway under `/api/v1/file-environments`.
-
-Implemented operations:
-
-- auto-create storage environment per `team_id + project_id` scope
-- add/remove members in environment
-- create folder, upload file, delete file/folder
-- download file and inline view file
-- rename file or folder
-
-Access model:
-
-- only environment members can access its files
-- users cannot create arbitrary standalone environments; environment is tied to team/project
-- storage quota: 100MB total per team
-- user existence checks are done through RabbitMQ RPC queue `user-service.user-exists`
-- file deletion publishes event into RabbitMQ queue `task-service.file-deleted` so task-service can fix attached file links
 
 ```
 unified-task-manager/
