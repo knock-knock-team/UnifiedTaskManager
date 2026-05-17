@@ -2,46 +2,45 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { PasswordField } from '../ui/PasswordField';
 
-const REGISTRATION_EMAIL_KEY = 'utm:registrationEmail';
-const REGISTRATION_CODE_KEY = 'utm:registrationCode';
-const REGISTRATION_CODE_SENT_AT_KEY = 'utm:registrationCodeSentAt';
+const PASSWORD_RESET_EMAIL_KEY = 'utm:passwordResetEmail';
+const PASSWORD_RESET_CODE_KEY = 'utm:passwordResetCode';
+const PASSWORD_RESET_CODE_SENT_AT_KEY = 'utm:passwordResetCodeSentAt';
 const RESEND_COOLDOWN_SECONDS = 120;
 
-export function RegisterPage({ onStartRegistration, onVerifyRegistrationCode, onCompleteRegistration }) {
+export function PasswordResetPage({ onStartPasswordReset, onVerifyPasswordResetCode, onCompletePasswordReset }) {
   const navigate = useNavigate();
   const location = useLocation();
   const codeInputRefs = useRef([]);
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState(() => sessionStorage.getItem(REGISTRATION_EMAIL_KEY) || '');
+  const [email, setEmail] = useState(() => sessionStorage.getItem(PASSWORD_RESET_EMAIL_KEY) || '');
   const [codeDigits, setCodeDigits] = useState(() => {
-    const saved = sessionStorage.getItem(REGISTRATION_CODE_KEY) || '';
+    const saved = sessionStorage.getItem(PASSWORD_RESET_CODE_KEY) || '';
     return Array.from({ length: 6 }, (_, index) => saved[index] || '');
   });
   const [password, setPassword] = useState('');
   const [passwordRepeat, setPasswordRepeat] = useState('');
   const [expiresInSeconds, setExpiresInSeconds] = useState(0);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [resendAvailableIn, setResendAvailableIn] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const step = useMemo(() => {
     if (location.pathname.endsWith('/code')) return 'code';
-    if (location.pathname.endsWith('/password')) return 'password';
+    if (location.pathname.endsWith('/new')) return 'new';
     return 'email';
   }, [location.pathname]);
   const code = codeDigits.join('');
 
   useEffect(() => {
-    if ((step === 'code' || step === 'password') && !email) {
-      navigate('/register', { replace: true });
+    if ((step === 'code' || step === 'new') && !email) {
+      navigate('/password-reset', { replace: true });
     }
-    if (step === 'password' && code.length !== 6) {
-      navigate('/register/code', { replace: true });
+    if (step === 'new' && code.length !== 6) {
+      navigate('/password-reset/code', { replace: true });
     }
   }, [code.length, email, navigate, step]);
 
   useEffect(() => {
     if (step !== 'code') return undefined;
-    const updateResendTimer = () => {
-      const sentAt = Number(sessionStorage.getItem(REGISTRATION_CODE_SENT_AT_KEY) || 0);
+    const updateTimer = () => {
+      const sentAt = Number(sessionStorage.getItem(PASSWORD_RESET_CODE_SENT_AT_KEY) || 0);
       if (!sentAt) {
         setResendAvailableIn(0);
         return;
@@ -49,19 +48,19 @@ export function RegisterPage({ onStartRegistration, onVerifyRegistrationCode, on
       const elapsedSeconds = Math.floor((Date.now() - sentAt) / 1000);
       setResendAvailableIn(Math.max(0, RESEND_COOLDOWN_SECONDS - elapsedSeconds));
     };
-    updateResendTimer();
-    const timer = window.setInterval(updateResendTimer, 1000);
+    updateTimer();
+    const timer = window.setInterval(updateTimer, 1000);
     return () => window.clearInterval(timer);
   }, [step]);
 
   async function handleStart(event) {
     setIsSubmitting(true);
     try {
-      const data = await onStartRegistration(event, email);
+      const data = await onStartPasswordReset(event, email);
       setExpiresInSeconds(Number(data?.expiresInSeconds || 0));
-      sessionStorage.setItem(REGISTRATION_EMAIL_KEY, email.trim().toLowerCase());
-      sessionStorage.setItem(REGISTRATION_CODE_SENT_AT_KEY, String(Date.now()));
-      navigate('/register/code');
+      sessionStorage.setItem(PASSWORD_RESET_EMAIL_KEY, email.trim().toLowerCase());
+      sessionStorage.setItem(PASSWORD_RESET_CODE_SENT_AT_KEY, String(Date.now()));
+      navigate('/password-reset/code');
     } finally {
       setIsSubmitting(false);
     }
@@ -70,11 +69,11 @@ export function RegisterPage({ onStartRegistration, onVerifyRegistrationCode, on
   async function handleResendCode() {
     setIsSubmitting(true);
     try {
-      const data = await onStartRegistration(null, email);
+      const data = await onStartPasswordReset(null, email);
       setCodeDigits(Array.from({ length: 6 }, () => ''));
       setExpiresInSeconds(Number(data?.expiresInSeconds || 0));
-      sessionStorage.setItem(REGISTRATION_CODE_KEY, '');
-      sessionStorage.setItem(REGISTRATION_CODE_SENT_AT_KEY, String(Date.now()));
+      sessionStorage.setItem(PASSWORD_RESET_CODE_KEY, '');
+      sessionStorage.setItem(PASSWORD_RESET_CODE_SENT_AT_KEY, String(Date.now()));
       setResendAvailableIn(RESEND_COOLDOWN_SECONDS);
       codeInputRefs.current[0]?.focus();
     } finally {
@@ -85,10 +84,10 @@ export function RegisterPage({ onStartRegistration, onVerifyRegistrationCode, on
   async function handleVerify(event) {
     setIsSubmitting(true);
     try {
-      const data = await onVerifyRegistrationCode(event, email, code);
+      const data = await onVerifyPasswordResetCode(event, email, code);
       setExpiresInSeconds(Number(data?.expiresInSeconds || 0));
-      sessionStorage.setItem(REGISTRATION_CODE_KEY, code);
-      navigate('/register/password');
+      sessionStorage.setItem(PASSWORD_RESET_CODE_KEY, code);
+      navigate('/password-reset/new');
     } finally {
       setIsSubmitting(false);
     }
@@ -96,15 +95,14 @@ export function RegisterPage({ onStartRegistration, onVerifyRegistrationCode, on
 
   async function handleComplete(event) {
     event.preventDefault();
-    if (password !== passwordRepeat) {
-      return;
-    }
+    if (password !== passwordRepeat) return;
     setIsSubmitting(true);
     try {
-      await onCompleteRegistration(event, name, email, code, password);
-      sessionStorage.removeItem(REGISTRATION_EMAIL_KEY);
-      sessionStorage.removeItem(REGISTRATION_CODE_KEY);
-      sessionStorage.removeItem(REGISTRATION_CODE_SENT_AT_KEY);
+      await onCompletePasswordReset(event, email, code, password);
+      sessionStorage.removeItem(PASSWORD_RESET_EMAIL_KEY);
+      sessionStorage.removeItem(PASSWORD_RESET_CODE_KEY);
+      sessionStorage.removeItem(PASSWORD_RESET_CODE_SENT_AT_KEY);
+      navigate('/login', { replace: true });
     } finally {
       setIsSubmitting(false);
     }
@@ -144,22 +142,24 @@ export function RegisterPage({ onStartRegistration, onVerifyRegistrationCode, on
   return (
     <section className="single-page">
       <article className="pane single-card">
-        <p className="section-label">Регистрация</p>
-        <h2>{step === 'email' ? 'Подтвердите email' : step === 'code' ? 'Введите код' : 'Завершите регистрацию'}</h2>
+        <p className="section-label">Восстановление доступа</p>
+        <h2>{step === 'email' ? 'Введите email' : step === 'code' ? 'Введите код' : 'Новый пароль'}</h2>
         <p className="auth-step-caption">
-          {step === 'email' && 'Введите почту, на неё придёт 6-значный код подтверждения.'}
-          {step === 'code' && `Мы отправили код на ${email}. ${expiresCaption}`}
-          {step === 'password' && 'Код подтверждён. Теперь укажите имя и придумайте пароль.'}
+          {step === 'email' && 'Если аккаунт существует, мы отправим на почту 6-значный код восстановления.'}
+          {step === 'code' && `Проверьте почту ${email}. ${expiresCaption}`}
+          {step === 'new' && 'Код подтверждён. Придумайте новый пароль.'}
         </p>
+
         {step === 'email' && (
           <form className="auth-form" onSubmit={(event) => void handleStart(event)} autoComplete="off">
             <label className="field-label">
               <span>Email</span>
-              <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" name="register-email" autoComplete="email" placeholder="you@команда.рф" required disabled={isSubmitting} />
+              <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" name="reset-email" autoComplete="email" placeholder="you@команда.рф" required disabled={isSubmitting} />
             </label>
             <button type="submit" disabled={isSubmitting}>{isSubmitting ? 'Отправляем...' : 'Получить код'}</button>
           </form>
         )}
+
         {step === 'code' && (
           <form className="auth-form" onSubmit={(event) => void handleVerify(event)} autoComplete="off">
             <div className="registration-code-grid" onPaste={handleCodePaste}>
@@ -173,42 +173,27 @@ export function RegisterPage({ onStartRegistration, onVerifyRegistrationCode, on
                   inputMode="numeric"
                   pattern="\d*"
                   maxLength={1}
-                  aria-label={`Цифра ${index + 1} кода`}
+                  aria-label={`Цифра ${index + 1} кода восстановления`}
                   disabled={isSubmitting}
                 />
               ))}
             </div>
+            <p className="auth-helper-caption">Если письмо не пришло, возможно, аккаунта с такой почтой нет. Проверьте email или попробуйте зарегистрироваться.</p>
             <button type="submit" disabled={isSubmitting || code.length !== 6}>{isSubmitting ? 'Проверяем...' : 'Проверить код'}</button>
-            <p className="auth-helper-caption">
-              Если письмо не пришло, возможно, аккаунт уже существует. Попробуйте войти или восстановить доступ.
-            </p>
             <button type="button" className="ghost" disabled={isSubmitting || resendAvailableIn > 0} onClick={() => void handleResendCode()}>
               {resendAvailableIn > 0 ? `Отправить повторно через ${resendAvailableIn} сек.` : 'Отправить код повторно'}
             </button>
             <Link className="auth-inline-link" to="/login">Вернуться ко входу</Link>
-            <Link className="auth-inline-link" to="/password-reset">Восстановить пароль</Link>
-            <button type="button" className="ghost" disabled={isSubmitting} onClick={() => {
-              sessionStorage.removeItem(REGISTRATION_EMAIL_KEY);
-              sessionStorage.removeItem(REGISTRATION_CODE_KEY);
-              sessionStorage.removeItem(REGISTRATION_CODE_SENT_AT_KEY);
-              setCodeDigits(Array.from({ length: 6 }, () => ''));
-              navigate('/register');
-            }}>
-              Изменить email
-            </button>
           </form>
         )}
-        {step === 'password' && (
+
+        {step === 'new' && (
           <form className="auth-form" onSubmit={(event) => void handleComplete(event)} autoComplete="off">
-            <label className="field-label">
-              <span>Имя</span>
-              <input value={name} onChange={(event) => setName(event.target.value)} name="register-name" autoComplete="name" placeholder="Как к вам обращаться" required disabled={isSubmitting} />
-            </label>
             <PasswordField
-              label="Пароль"
+              label="Новый пароль"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              name="register-password"
+              name="reset-password"
               autoComplete="new-password"
               minLength={8}
               placeholder="Не менее 8 символов"
@@ -219,7 +204,7 @@ export function RegisterPage({ onStartRegistration, onVerifyRegistrationCode, on
               label="Повтор пароля"
               value={passwordRepeat}
               onChange={(event) => setPasswordRepeat(event.target.value)}
-              name="register-password-repeat"
+              name="reset-password-repeat"
               autoComplete="new-password"
               minLength={8}
               placeholder="Повторите пароль"
@@ -227,11 +212,12 @@ export function RegisterPage({ onStartRegistration, onVerifyRegistrationCode, on
               disabled={isSubmitting}
             />
             {passwordsMismatch && <p className="auth-error-caption">Пароли не совпадают.</p>}
-            <button type="submit" disabled={isSubmitting || !password || password !== passwordRepeat}>{isSubmitting ? 'Создаём аккаунт...' : 'Завершить регистрацию'}</button>
+            <button type="submit" disabled={isSubmitting || !password || password !== passwordRepeat}>{isSubmitting ? 'Сохраняем...' : 'Сменить пароль'}</button>
           </form>
         )}
+
         <p className="auth-foot">
-          Уже есть аккаунт? <Link to="/login">Войти</Link>
+          Вспомнили пароль? <Link to="/login">Войти</Link>
         </p>
       </article>
     </section>

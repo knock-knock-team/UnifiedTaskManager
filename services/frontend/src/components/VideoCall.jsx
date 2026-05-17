@@ -233,6 +233,11 @@ export function VideoCall({
 
           case 'participant-left':
             console.log('[Call] Participant left:', message.from);
+            remoteAudioTrackIdsRef.current.forEach((key) => {
+              if (String(key).startsWith(`${message.from}:`)) {
+                remoteAudioTrackIdsRef.current.delete(key);
+              }
+            });
             setParticipants(prev => prev.filter(p => p.id !== message.from));
             break;
 

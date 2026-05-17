@@ -57,3 +57,12 @@ type RegistrationVerification struct {
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
+
+type PasswordResetVerification struct {
+	Email        string
+	CodeHash     string
+	AttemptCount int
+	ExpiresAt    time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}

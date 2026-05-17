@@ -345,6 +345,12 @@ func isPublicRoute(path string) bool {
 		return true
 	case path == "/v1/auth/register/complete":
 		return true
+	case path == "/v1/auth/password-reset/start":
+		return true
+	case path == "/v1/auth/password-reset/verify":
+		return true
+	case path == "/v1/auth/password-reset/complete":
+		return true
 	case path == "/v1/auth/login":
 		return true
 	case path == "/v1/auth/refresh":

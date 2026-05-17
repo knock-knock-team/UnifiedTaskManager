@@ -12,11 +12,16 @@ import (
 
 type EmailSender interface {
 	SendRegistrationCode(email, name, code string) error
+	SendPasswordResetCode(email, name, code string) error
 }
 
 type NoopEmailSender struct{}
 
 func (NoopEmailSender) SendRegistrationCode(_, _, _ string) error {
+	return nil
+}
+
+func (NoopEmailSender) SendPasswordResetCode(_, _, _ string) error {
 	return nil
 }
 
@@ -30,6 +35,30 @@ type SMTPEmailSender struct {
 }
 
 func (s SMTPEmailSender) SendRegistrationCode(email, name, code string) error {
+	return s.sendCodeEmail(
+		email,
+		name,
+		code,
+		"Код подтверждения регистрации в UnifiedTaskManager",
+		"Подтвердите регистрацию",
+		"Введите этот код на странице регистрации, чтобы продолжить создание аккаунта.",
+		"Ваш код подтверждения регистрации",
+	)
+}
+
+func (s SMTPEmailSender) SendPasswordResetCode(email, name, code string) error {
+	return s.sendCodeEmail(
+		email,
+		name,
+		code,
+		"Код восстановления пароля UnifiedTaskManager",
+		"Восстановление доступа",
+		"Введите этот код на странице восстановления пароля, чтобы задать новый пароль.",
+		"Ваш код восстановления пароля",
+	)
+}
+
+func (s SMTPEmailSender) sendCodeEmail(email, name, code, subject, title, intro, textPrefix string) error {
 	host := strings.TrimSpace(s.Host)
 	port := strings.TrimSpace(s.Port)
 	username := strings.TrimSpace(s.Username)
@@ -50,9 +79,8 @@ func (s SMTPEmailSender) SendRegistrationCode(email, name, code string) error {
 	if fromName == "" {
 		fromName = "UnifiedTaskManager"
 	}
-	subject := "Код подтверждения регистрации в UnifiedTaskManager"
-	textBody := fmt.Sprintf("Здравствуйте, %s!\n\nВаш код подтверждения регистрации: %s\n\nКод действует 10 минут. Если вы не регистрировались в UnifiedTaskManager, просто проигнорируйте это письмо.\n", displayName, code)
-	htmlBody := registrationCodeHTML(displayName, code)
+	textBody := fmt.Sprintf("Здравствуйте, %s!\n\n%s: %s\n\nКод действует 10 минут. Если вы не запрашивали это письмо в UnifiedTaskManager, просто проигнорируйте его.\n", displayName, textPrefix, code)
+	htmlBody := codeEmailHTML(displayName, code, title, intro)
 	messageIDDomain := host
 	if at := strings.LastIndex(from, "@"); at >= 0 && at+1 < len(from) {
 		messageIDDomain = from[at+1:]
@@ -84,9 +112,11 @@ func (s SMTPEmailSender) SendRegistrationCode(email, name, code string) error {
 	return smtp.SendMail(host+":"+port, auth, from, []string{to}, []byte(message))
 }
 
-func registrationCodeHTML(displayName, code string) string {
+func codeEmailHTML(displayName, code, title, intro string) string {
 	safeName := html.EscapeString(displayName)
 	safeCode := html.EscapeString(code)
+	safeTitle := html.EscapeString(title)
+	safeIntro := html.EscapeString(intro)
 	digits := strings.Split(safeCode, "")
 	codeCells := make([]string, 0, len(digits))
 	for _, digit := range digits {
@@ -97,7 +127,7 @@ func registrationCodeHTML(displayName, code string) string {
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Код подтверждения UnifiedTaskManager</title>
+    <title>%s</title>
   </head>
   <body style="margin:0;padding:0;background:#07111f;font-family:Arial,Helvetica,sans-serif;color:#e7edf6;">
     <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="background:#07111f;padding:28px 12px;">
@@ -107,8 +137,8 @@ func registrationCodeHTML(displayName, code string) string {
             <tr>
               <td style="padding:28px 28px 18px;background:linear-gradient(135deg,#1c2a44,#102019);">
                 <div style="display:inline-block;padding:7px 11px;border-radius:999px;background:rgba(126,168,255,0.16);border:1px solid rgba(126,168,255,0.35);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#cfe0ff;">UnifiedTaskManager</div>
-                <h1 style="margin:18px 0 8px;font-size:28px;line-height:1.15;color:#ffffff;">Подтвердите регистрацию</h1>
-                <p style="margin:0;color:#c9d4e4;font-size:15px;line-height:1.6;">Здравствуйте, %s! Введите этот код на странице регистрации, чтобы продолжить создание аккаунта.</p>
+                <h1 style="margin:18px 0 8px;font-size:28px;line-height:1.15;color:#ffffff;">%s</h1>
+                <p style="margin:0;color:#c9d4e4;font-size:15px;line-height:1.6;">Здравствуйте, %s! %s</p>
               </td>
             </tr>
             <tr>
@@ -133,5 +163,5 @@ func registrationCodeHTML(displayName, code string) string {
       </tr>
     </table>
   </body>
-</html>`, safeName, strings.Join(codeCells, ""))
+</html>`, safeTitle, safeTitle, safeName, safeIntro, strings.Join(codeCells, ""))
 }

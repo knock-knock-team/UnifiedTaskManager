@@ -20,11 +20,16 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
   const messagesContainerRef = useRef(null);
   const scrollModeRef = useRef('none');
   const preservedScrollTopRef = useRef(0);
+  const selectedRoomIdRef = useRef('');
 
   const selectedRoom = useMemo(
     () => rooms.find((room) => room.id === selectedRoomId) || null,
     [rooms, selectedRoomId]
   );
+
+  useEffect(() => {
+    selectedRoomIdRef.current = selectedRoomId;
+  }, [selectedRoomId]);
 
   const loadRooms = useCallback(async () => {
     if (!accessToken) return;
@@ -74,8 +79,10 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
     }
     try {
       const data = await request(apiBase, accessToken, `/v1/chats/rooms/${encodeURIComponent(roomID)}`, { auth: true }, onUpdateAccessToken);
+      if (selectedRoomIdRef.current !== roomID) return;
       setRoomDetails(data || null);
     } catch {
+      if (selectedRoomIdRef.current !== roomID) return;
       setRoomDetails(null);
     }
   }, [accessToken, apiBase, onUpdateAccessToken]);
@@ -98,11 +105,15 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
     setIsLoadingMessages(true);
     try {
       const data = await request(apiBase, accessToken, `/v1/chats/rooms/${encodeURIComponent(roomID)}/messages?limit=100&offset=0`, { auth: true }, onUpdateAccessToken);
+      if (selectedRoomIdRef.current !== roomID) return;
       setMessages(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
+      if (selectedRoomIdRef.current !== roomID) return;
       showNotification(error.message || 'Не удалось загрузить сообщения', 'error');
     } finally {
-      setIsLoadingMessages(false);
+      if (selectedRoomIdRef.current === roomID) {
+        setIsLoadingMessages(false);
+      }
     }
   }, [accessToken, apiBase, onUpdateAccessToken, showNotification]);
 
@@ -145,6 +156,13 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
       return;
     }
     const ids = new Set();
+    rooms.forEach((room) => {
+      (room?.participantIds || []).forEach((id) => {
+        if (id && id !== profile?.id && !userDirectory[id]) {
+          ids.add(id);
+        }
+      });
+    });
     (roomDetails?.participantIds || []).forEach((id) => {
       if (id && id !== profile?.id && !userDirectory[id]) {
         ids.add(id);
@@ -186,7 +204,7 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
     return () => {
       cancelled = true;
     };
-  }, [accessToken, lookupUserById, messages, profile?.id, roomDetails]);
+  }, [accessToken, lookupUserById, messages, profile?.id, roomDetails, rooms]);
 
   const handleCreateDirectChat = async (event) => {
     event.preventDefault();
@@ -309,7 +327,7 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
   const resolveRoomTitle = (room) => {
     if (!room) return 'Без названия';
     if (room.title && String(room.title).trim()) return room.title;
-    const participantNames = (roomDetails?.participantIds || [])
+    const participantNames = (room.participantIds || roomDetails?.participantIds || [])
       .filter((id) => id && id !== profile?.id)
       .map((id) => userDirectory[id]?.name || userDirectory[id]?.tag || String(id).slice(0, 8));
     if (participantNames.length > 0) {
@@ -469,20 +487,29 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
             ) : messages.map((message) => {
               const isMine = message.senderUserId === profile?.id;
               const accent = senderAccent(message.senderUserId);
+              const senderLabel = resolveUserLabel(message.senderUserId);
+              const sentAt = new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
               return (
-              <article
-                key={message.id}
-                className={`chat-message-item ${isMine ? 'mine' : 'other'}`}
-                style={{ '--sender-accent': accent }}
-              >
-                <div className="chat-message-meta">
-                  <span className="chat-author-dot" aria-hidden="true" />
-                  <strong>{resolveUserLabel(message.senderUserId)}</strong>
-                  <span>{new Date(message.createdAt).toLocaleString()}</span>
-                </div>
-                <p>{message.body}</p>
-              </article>
-            );
+                <article
+                  key={message.id}
+                  className={`chat-message-item ${isMine ? 'mine' : 'other'}`}
+                  style={{ '--sender-accent': accent }}
+                  aria-label={`${isMine ? 'Ваше сообщение' : `Сообщение от ${senderLabel}`}: ${message.body}`}
+                >
+                  <div className="chat-message-bubble">
+                    {!isMine && (
+                      <div className="chat-message-author">
+                        <span className="chat-author-dot" aria-hidden="true" />
+                        <strong>{senderLabel}</strong>
+                      </div>
+                    )}
+                    <p>{message.body}</p>
+                    <time dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString()}>
+                      {sentAt}
+                    </time>
+                  </div>
+                </article>
+              );
             })}
           </div>
 

@@ -131,17 +131,19 @@ type Room struct {
 
 // Peer represents a websocket + PeerConnection client
 type Peer struct {
-	id              string
-	displayName     string
-	conn            *websocket.Conn
-	pc              *webrtc.PeerConnection
-	room            *Room
-	send            chan outgoingMsg
-	mu              sync.Mutex
-	negotiationMu   sync.Mutex
-	audioEnabled    bool
-	remoteDescSet   bool
-	pendingICEQueue []webrtc.ICECandidateInit
+	id                 string
+	displayName        string
+	conn               *websocket.Conn
+	pc                 *webrtc.PeerConnection
+	room               *Room
+	send               chan outgoingMsg
+	mu                 sync.Mutex
+	negotiationMu      sync.Mutex
+	audioEnabled       bool
+	remoteDescSet      bool
+	pendingICEQueue    []webrtc.ICECandidateInit
+	subscribedTrackIDs map[string]bool
+	subscribedSenders  map[string]*webrtc.RTPSender
 }
 
 func (p *Peer) sendMessage(msg outgoingMsg) (sent bool) {
@@ -376,6 +378,7 @@ func handleCallAction(w http.ResponseWriter, r *http.Request) {
 func (r *Room) addPeer(p *Peer) {
 	r.mu.Lock()
 	var prevPeer *Peer
+	replacedTrackIDs := make([]string, 0)
 	if existing := r.peers[p.id]; existing != nil && existing != p {
 		prevPeer = existing
 	}
@@ -384,6 +387,8 @@ func (r *Room) addPeer(p *Peer) {
 		for _, tr := range r.tracks {
 			if tr.publisherID != p.id {
 				filteredTracks = append(filteredTracks, tr)
+			} else {
+				replacedTrackIDs = append(replacedTrackIDs, tr.trackID)
 			}
 		}
 		r.tracks = filteredTracks
@@ -411,6 +416,15 @@ func (r *Room) addPeer(p *Peer) {
 			},
 		})
 		_ = prevPeer.conn.Close()
+	}
+
+	for _, other := range peersSnapshot {
+		if other.id == p.id {
+			continue
+		}
+		if other.removeForwardedTracks(replacedTrackIDs) {
+			other.sendMessage(outgoingMsg{Type: "renegotiate", CallID: r.id, From: "sfu", To: other.id, Payload: map[string]interface{}{"tracks": []map[string]interface{}{}}})
+		}
 	}
 
 	// Notify others about new participant
@@ -451,11 +465,13 @@ func (r *Room) addPeer(p *Peer) {
 				"displayName": pub.publisherName,
 			},
 		})
-		p.negotiationMu.Lock()
-		sender, err := p.pc.AddTrack(pub.local)
-		p.negotiationMu.Unlock()
+		sender, added, err := p.addForwardedTrack(pub)
 		if err != nil {
 			log.Printf("AddTrack(backfill) failed for subscriber %s: %v", p.id, err)
+			continue
+		}
+		if !added {
+			log.Printf("AddTrack(backfill) skipped duplicate track %s for subscriber %s", pub.trackID, p.id)
 			continue
 		}
 		go func(s *webrtc.RTPSender) {
@@ -517,13 +533,64 @@ func (p *Peer) addOrQueueICECandidate(cand webrtc.ICECandidateInit) {
 	}
 }
 
+func (p *Peer) addForwardedTrack(track *publishedTrack) (*webrtc.RTPSender, bool, error) {
+	if track == nil || track.local == nil || strings.TrimSpace(track.trackID) == "" {
+		return nil, false, errors.New("invalid forwarded track")
+	}
+	p.negotiationMu.Lock()
+	defer p.negotiationMu.Unlock()
+
+	if p.subscribedTrackIDs == nil {
+		p.subscribedTrackIDs = make(map[string]bool)
+	}
+	if p.subscribedSenders == nil {
+		p.subscribedSenders = make(map[string]*webrtc.RTPSender)
+	}
+	if p.subscribedTrackIDs[track.trackID] {
+		return nil, false, nil
+	}
+
+	sender, err := p.pc.AddTrack(track.local)
+	if err != nil {
+		return nil, false, err
+	}
+	p.subscribedTrackIDs[track.trackID] = true
+	p.subscribedSenders[track.trackID] = sender
+	return sender, true, nil
+}
+
+func (p *Peer) removeForwardedTracks(trackIDs []string) bool {
+	if len(trackIDs) == 0 {
+		return false
+	}
+	p.negotiationMu.Lock()
+	defer p.negotiationMu.Unlock()
+
+	changed := false
+	for _, trackID := range trackIDs {
+		sender := p.subscribedSenders[trackID]
+		if sender != nil {
+			if err := p.pc.RemoveTrack(sender); err != nil {
+				log.Printf("RemoveTrack failed for subscriber %s track %s: %v", p.id, trackID, err)
+			}
+			changed = true
+		}
+		delete(p.subscribedTrackIDs, trackID)
+		delete(p.subscribedSenders, trackID)
+	}
+	return changed
+}
+
 func (r *Room) removePeer(p *Peer) {
 	r.mu.Lock()
 	delete(r.peers, p.id)
 	filteredTracks := make([]*publishedTrack, 0, len(r.tracks))
+	removedTrackIDs := make([]string, 0)
 	for _, tr := range r.tracks {
 		if tr.publisherID != p.id {
 			filteredTracks = append(filteredTracks, tr)
+		} else {
+			removedTrackIDs = append(removedTrackIDs, tr.trackID)
 		}
 	}
 	r.tracks = filteredTracks
@@ -534,6 +601,9 @@ func (r *Room) removePeer(p *Peer) {
 	r.mu.Unlock()
 
 	for _, other := range peersSnapshot {
+		if other.removeForwardedTracks(removedTrackIDs) {
+			other.sendMessage(outgoingMsg{Type: "renegotiate", CallID: r.id, From: "sfu", To: other.id, Payload: map[string]interface{}{"tracks": []map[string]interface{}{}}})
+		}
 		other.sendMessage(outgoingMsg{Type: "participant-left", CallID: r.id, From: p.id})
 	}
 }
@@ -598,14 +668,15 @@ func (r *Room) publishTrack(pub *Peer, track *webrtc.TrackRemote, recv *webrtc.R
 
 	// Add to all subscribers (other peers)
 	r.mu.Lock()
-	r.tracks = append(r.tracks, &publishedTrack{
+	published := &publishedTrack{
 		publisherID:   pub.id,
 		publisherName: pub.displayName,
 		trackID:       forwardedTrackID,
 		streamID:      forwardedStreamID,
 		kind:          trackKind,
 		local:         local,
-	})
+	}
+	r.tracks = append(r.tracks, published)
 	subs := make([]*Peer, 0, len(r.peers))
 	for _, p := range r.peers {
 		if p.id == pub.id {
@@ -619,11 +690,13 @@ func (r *Room) publishTrack(pub *Peer, track *webrtc.TrackRemote, recv *webrtc.R
 		// Notify subscriber that a new track will be added from publisher
 		sub.sendMessage(outgoingMsg{Type: "track-added", CallID: r.id, From: pub.id, Payload: map[string]interface{}{"trackId": forwardedTrackID, "streamId": forwardedStreamID, "kind": trackKind, "displayName": pub.displayName}})
 
-		sub.negotiationMu.Lock()
-		sender, err := sub.pc.AddTrack(local)
-		sub.negotiationMu.Unlock()
+		sender, added, err := sub.addForwardedTrack(published)
 		if err != nil {
 			log.Printf("AddTrack failed for subscriber %s: %v", sub.id, err)
+			continue
+		}
+		if !added {
+			log.Printf("AddTrack skipped duplicate track %s for subscriber %s", published.trackID, sub.id)
 			continue
 		}
 		// Read RTCP from the sender to keep the pipeline healthy
@@ -716,12 +789,14 @@ func wsSFUHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	peer := &Peer{
-		id:              authClaims.Subject,
-		displayName:     sanitizeDisplayName("", authClaims.Subject),
-		conn:            conn,
-		pc:              pc,
-		send:            make(chan outgoingMsg, 16),
-		pendingICEQueue: make([]webrtc.ICECandidateInit, 0, 8),
+		id:                 authClaims.Subject,
+		displayName:        sanitizeDisplayName("", authClaims.Subject),
+		conn:               conn,
+		pc:                 pc,
+		send:               make(chan outgoingMsg, 16),
+		pendingICEQueue:    make([]webrtc.ICECandidateInit, 0, 8),
+		subscribedTrackIDs: make(map[string]bool),
+		subscribedSenders:  make(map[string]*webrtc.RTPSender),
 	}
 
 	// Relay ICE candidates to client

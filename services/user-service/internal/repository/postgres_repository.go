@@ -105,6 +105,16 @@ CREATE TABLE IF NOT EXISTS registration_verifications (
 );
 CREATE INDEX IF NOT EXISTS idx_registration_verifications_expires_at ON registration_verifications(expires_at);
 
+CREATE TABLE IF NOT EXISTS password_reset_verifications (
+	email TEXT PRIMARY KEY,
+	code_hash TEXT NOT NULL,
+	attempt_count INT NOT NULL DEFAULT 0,
+	expires_at TIMESTAMPTZ NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_password_reset_verifications_expires_at ON password_reset_verifications(expires_at);
+
 CREATE TABLE IF NOT EXISTS user_teams (
 	user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	team_id TEXT NOT NULL,
@@ -685,6 +695,7 @@ SET name = EXCLUDED.name,
 	code_hash = EXCLUDED.code_hash,
 	attempt_count = EXCLUDED.attempt_count,
 	expires_at = EXCLUDED.expires_at,
+	created_at = EXCLUDED.created_at,
 	updated_at = EXCLUDED.updated_at`
 	_, err := r.db.ExecContext(
 		ctx,
@@ -725,6 +736,56 @@ WHERE email = $1`
 
 func (r *PostgresUserRepository) DeleteRegistrationVerification(ctx context.Context, email string) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM registration_verifications WHERE email = $1`, strings.ToLower(strings.TrimSpace(email)))
+	return err
+}
+
+func (r *PostgresUserRepository) UpsertPasswordResetVerification(ctx context.Context, item model.PasswordResetVerification) error {
+	const q = `
+INSERT INTO password_reset_verifications (email, code_hash, attempt_count, expires_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (email) DO UPDATE
+SET code_hash = EXCLUDED.code_hash,
+	attempt_count = EXCLUDED.attempt_count,
+	expires_at = EXCLUDED.expires_at,
+	created_at = EXCLUDED.created_at,
+	updated_at = EXCLUDED.updated_at`
+	_, err := r.db.ExecContext(
+		ctx,
+		q,
+		strings.ToLower(strings.TrimSpace(item.Email)),
+		item.CodeHash,
+		item.AttemptCount,
+		item.ExpiresAt.UTC(),
+		item.CreatedAt.UTC(),
+		item.UpdatedAt.UTC(),
+	)
+	return err
+}
+
+func (r *PostgresUserRepository) FindPasswordResetVerification(ctx context.Context, email string) (model.PasswordResetVerification, error) {
+	const q = `
+SELECT email, code_hash, attempt_count, expires_at, created_at, updated_at
+FROM password_reset_verifications
+WHERE email = $1`
+	var item model.PasswordResetVerification
+	if err := r.db.QueryRowContext(ctx, q, strings.ToLower(strings.TrimSpace(email))).Scan(
+		&item.Email,
+		&item.CodeHash,
+		&item.AttemptCount,
+		&item.ExpiresAt,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.PasswordResetVerification{}, ErrNotFound
+		}
+		return model.PasswordResetVerification{}, err
+	}
+	return item, nil
+}
+
+func (r *PostgresUserRepository) DeletePasswordResetVerification(ctx context.Context, email string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM password_reset_verifications WHERE email = $1`, strings.ToLower(strings.TrimSpace(email)))
 	return err
 }
 
