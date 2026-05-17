@@ -344,6 +344,13 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     return [...columns, ...imported];
   }, [columns, tasks]);
 
+  const visibleBoardColumns = useMemo(() => {
+    if (filterColumnIds.size === 0) {
+      return boardColumns;
+    }
+    return boardColumns.filter((column) => filterColumnIds.has(column.id));
+  }, [boardColumns, filterColumnIds]);
+
   useEffect(() => {
     if (!accessToken) {
       setMemberDirectory({});
@@ -2630,7 +2637,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                     }
                     setFilterColumnIds(nextFilter);
                   }}
-                  title={filterColumnIds.has(column.id) ? `Скрыть ${column.title}` : `Показать ${column.title}`}
+                  title={filterColumnIds.has(column.id) ? `Убрать ${column.title} из фильтра` : `Оставить ${column.title} на доске`}
                 >
                   {column.title}
                 </button>
@@ -2653,7 +2660,9 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
           <div className="task-board">
           {boardColumns.length === 0 ? (
             <p className="empty-state tasks-view-empty">Создайте первую колонку, чтобы начать работу с задачами.</p>
-          ) : boardColumns.map((column, index) => {
+          ) : visibleBoardColumns.length === 0 ? (
+            <p className="empty-state tasks-view-empty">Нет колонок по текущему фильтру.</p>
+          ) : visibleBoardColumns.map((column, index) => {
             const items = tasksByColumn[column.id] || [];
             const persistedIndex = columns.findIndex((item) => item.id === column.id);
             const canMoveLeft = !column.locked && persistedIndex > 0;

@@ -72,6 +72,9 @@ func (h *HTTPHandler) Routes() http.Handler {
 	mux.HandleFunc("/v1/auth/register/verify", h.registerVerify)
 	mux.HandleFunc("/v1/auth/register/complete", h.registerComplete)
 	mux.HandleFunc("/v1/auth/register", h.register)
+	mux.HandleFunc("/v1/auth/password-reset/start", h.passwordResetStart)
+	mux.HandleFunc("/v1/auth/password-reset/verify", h.passwordResetVerify)
+	mux.HandleFunc("/v1/auth/password-reset/complete", h.passwordResetComplete)
 	mux.HandleFunc("/v1/auth/login", h.login)
 	mux.HandleFunc("/v1/auth/refresh", h.refresh)
 	mux.HandleFunc("/v1/users/me", h.auth(h.usersMe))
@@ -207,8 +210,88 @@ func (h *HTTPHandler) registerStart(w http.ResponseWriter, r *http.Request) {
 		h.writeServiceError(w, err)
 		return
 	}
-	h.audit(r, "auth_register_code_sent")
+	h.audit(r, "auth_register_start_accepted")
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+func (h *HTTPHandler) passwordResetStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if !h.allowRate(r, "password_reset_start", 5, time.Minute) {
+		h.security(r, "rate_limited", "scope", "password_reset_start")
+		writeJSON(w, http.StatusTooManyRequests, errorBody("RATE_LIMITED", "Too many requests"))
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.StartPasswordReset(req.Email)
+	if err != nil {
+		h.security(r, "auth_password_reset_start_failed", "reason", err.Error())
+		h.writeServiceError(w, err)
+		return
+	}
+	h.audit(r, "auth_password_reset_start_accepted")
+	writeJSON(w, http.StatusAccepted, resp)
+}
+
+func (h *HTTPHandler) passwordResetVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if !h.allowRate(r, "password_reset_verify", 10, time.Minute) {
+		h.security(r, "rate_limited", "scope", "password_reset_verify")
+		writeJSON(w, http.StatusTooManyRequests, errorBody("RATE_LIMITED", "Too many requests"))
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.VerifyPasswordResetCode(req.Email, req.Code)
+	if err != nil {
+		h.security(r, "auth_password_reset_verify_failed", "reason", err.Error())
+		h.writeServiceError(w, err)
+		return
+	}
+	h.audit(r, "auth_password_reset_code_verified")
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *HTTPHandler) passwordResetComplete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if !h.allowRate(r, "password_reset_complete", 10, time.Minute) {
+		h.security(r, "rate_limited", "scope", "password_reset_complete")
+		writeJSON(w, http.StatusTooManyRequests, errorBody("RATE_LIMITED", "Too many requests"))
+		return
+	}
+	var req struct {
+		Email    string `json:"email"`
+		Code     string `json:"code"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.svc.CompletePasswordReset(req.Email, req.Code, req.Password); err != nil {
+		h.security(r, "auth_password_reset_complete_failed", "reason", err.Error())
+		h.writeServiceError(w, err)
+		return
+	}
+	h.audit(r, "auth_password_reset_completed")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *HTTPHandler) registerVerify(w http.ResponseWriter, r *http.Request) {

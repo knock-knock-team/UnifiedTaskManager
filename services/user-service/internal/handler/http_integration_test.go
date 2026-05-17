@@ -23,6 +23,11 @@ func (s *captureEmailSender) SendRegistrationCode(_, _, code string) error {
 	return nil
 }
 
+func (s *captureEmailSender) SendPasswordResetCode(_, _, code string) error {
+	s.code = code
+	return nil
+}
+
 func newIntegrationServer(t *testing.T) (*httptest.Server, *repository.InMemoryUserRepository, service.UserService, *captureEmailSender) {
 	t.Helper()
 	repo := repository.NewInMemoryUserRepository()

@@ -33,6 +33,9 @@ type UserService interface {
 	StartRegistration(email string) (RegistrationStartResult, error)
 	VerifyRegistrationCode(email, code string) (RegistrationStartResult, error)
 	CompleteRegistration(email, code, password, name string) (model.AuthResponse, error)
+	StartPasswordReset(email string) (RegistrationStartResult, error)
+	VerifyPasswordResetCode(email, code string) (RegistrationStartResult, error)
+	CompletePasswordReset(email, code, password string) error
 	Register(email, password, name string) (model.AuthResponse, error)
 	Login(email, password string) (model.AuthResponse, error)
 	Refresh(refreshToken string) (model.TokenPair, error)
@@ -174,6 +177,87 @@ func (s *userService) CompleteRegistration(email, code, password, name string) (
 	return resp, nil
 }
 
+func (s *userService) StartPasswordReset(email string) (RegistrationStartResult, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return RegistrationStartResult{}, ErrBadRequest
+	}
+	if _, err := mail.ParseAddress(email); err != nil {
+		return RegistrationStartResult{}, ErrBadRequest
+	}
+	user, err := s.repo.FindByEmail(email)
+	if errors.Is(err, repository.ErrNotFound) {
+		return RegistrationStartResult{Email: email, ExpiresInSeconds: 600}, nil
+	}
+	if err != nil {
+		return RegistrationStartResult{}, err
+	}
+	if existing, err := s.repo.FindPasswordResetVerification(context.Background(), email); err == nil {
+		if time.Since(existing.CreatedAt) < 2*time.Minute {
+			return RegistrationStartResult{}, ErrTooManyRequests
+		}
+	} else if !errors.Is(err, repository.ErrNotFound) {
+		return RegistrationStartResult{}, err
+	}
+
+	code, err := newRegistrationCode()
+	if err != nil {
+		return RegistrationStartResult{}, err
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(10 * time.Minute)
+	item := model.PasswordResetVerification{
+		Email:        email,
+		CodeHash:     hashRegistrationCode(email, code),
+		AttemptCount: 0,
+		ExpiresAt:    expiresAt,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := s.repo.UpsertPasswordResetVerification(context.Background(), item); err != nil {
+		return RegistrationStartResult{}, err
+	}
+	if err := s.emailSender.SendPasswordResetCode(email, user.Name, code); err != nil {
+		_ = s.repo.DeletePasswordResetVerification(context.Background(), email)
+		return RegistrationStartResult{}, err
+	}
+	return RegistrationStartResult{Email: email, ExpiresInSeconds: int64(time.Until(expiresAt).Seconds())}, nil
+}
+
+func (s *userService) VerifyPasswordResetCode(email, code string) (RegistrationStartResult, error) {
+	item, err := s.verifyPasswordResetCode(email, code)
+	if err != nil {
+		return RegistrationStartResult{}, err
+	}
+	return RegistrationStartResult{Email: item.Email, ExpiresInSeconds: int64(time.Until(item.ExpiresAt).Seconds())}, nil
+}
+
+func (s *userService) CompletePasswordReset(email, code, password string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	code = strings.TrimSpace(code)
+	if email == "" || code == "" || password == "" || len(password) < 8 {
+		return ErrBadRequest
+	}
+	if _, err := s.verifyPasswordResetCode(email, code); err != nil {
+		return err
+	}
+	user, err := s.repo.FindByEmail(email)
+	if err != nil {
+		return ErrUnauthorized
+	}
+	hash, err := hashPassword(password)
+	if err != nil {
+		return err
+	}
+	user.PasswordHash = hash
+	user.UpdatedAt = time.Now().UTC()
+	if _, err := s.repo.Update(user); err != nil {
+		return err
+	}
+	_ = s.repo.DeletePasswordResetVerification(context.Background(), email)
+	return nil
+}
+
 func (s *userService) verifyRegistrationCode(email, code string) (model.RegistrationVerification, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	code = strings.TrimSpace(code)
@@ -197,6 +281,33 @@ func (s *userService) verifyRegistrationCode(email, code string) (model.Registra
 		item.UpdatedAt = time.Now().UTC()
 		_ = s.repo.UpsertRegistrationVerification(context.Background(), item)
 		return model.RegistrationVerification{}, ErrUnauthorized
+	}
+	return item, nil
+}
+
+func (s *userService) verifyPasswordResetCode(email, code string) (model.PasswordResetVerification, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	code = strings.TrimSpace(code)
+	if email == "" || code == "" {
+		return model.PasswordResetVerification{}, ErrBadRequest
+	}
+	item, err := s.repo.FindPasswordResetVerification(context.Background(), email)
+	if err != nil {
+		return model.PasswordResetVerification{}, ErrUnauthorized
+	}
+	if time.Now().UTC().After(item.ExpiresAt) {
+		_ = s.repo.DeletePasswordResetVerification(context.Background(), email)
+		return model.PasswordResetVerification{}, ErrUnauthorized
+	}
+	if item.AttemptCount >= 5 {
+		_ = s.repo.DeletePasswordResetVerification(context.Background(), email)
+		return model.PasswordResetVerification{}, ErrUnauthorized
+	}
+	if subtle.ConstantTimeCompare([]byte(item.CodeHash), []byte(hashRegistrationCode(email, code))) != 1 {
+		item.AttemptCount++
+		item.UpdatedAt = time.Now().UTC()
+		_ = s.repo.UpsertPasswordResetVerification(context.Background(), item)
+		return model.PasswordResetVerification{}, ErrUnauthorized
 	}
 	return item, nil
 }

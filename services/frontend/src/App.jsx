@@ -9,6 +9,7 @@ import { CabinetSettingsPage } from './pages/CabinetSettingsPage';
 import { HomePage } from './pages/HomePage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
+import { PasswordResetPage } from './pages/PasswordResetPage';
 import { PrivacyPage, TermsPage } from './pages/LegalPages';
 import { ProtectedRoute } from './routes/ProtectedRoute';
 import { AgentChatDrawer } from './ui/AgentChatDrawer';
@@ -204,6 +205,50 @@ function App() {
     }
   }
 
+  async function onStartPasswordReset(event, email) {
+    event?.preventDefault?.();
+    try {
+      const data = await request(apiBase, '', '/v1/auth/password-reset/start', {
+        method: 'POST',
+        body: { email }
+      });
+      showNotification('Если аккаунт существует, код восстановления отправлен на почту', 'success');
+      return data;
+    } catch (error) {
+      showNotification(error.message || 'Не удалось отправить код восстановления', 'error');
+      throw error;
+    }
+  }
+
+  async function onVerifyPasswordResetCode(event, email, code) {
+    event.preventDefault();
+    try {
+      const data = await request(apiBase, '', '/v1/auth/password-reset/verify', {
+        method: 'POST',
+        body: { email, code }
+      });
+      showNotification('Код подтверждён', 'success');
+      return data;
+    } catch (error) {
+      showNotification(error.message || 'Неверный код восстановления', 'error');
+      throw error;
+    }
+  }
+
+  async function onCompletePasswordReset(event, email, code, password) {
+    event.preventDefault();
+    try {
+      await request(apiBase, '', '/v1/auth/password-reset/complete', {
+        method: 'POST',
+        body: { email, code, password }
+      });
+      showNotification('Пароль изменён. Теперь войдите с новым паролем.', 'success');
+    } catch (error) {
+      showNotification(error.message || 'Не удалось изменить пароль', 'error');
+      throw error;
+    }
+  }
+
   async function onLogin(event, email, password) {
     event.preventDefault();
     try {
@@ -291,6 +336,9 @@ function App() {
             <Route path="/register" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <RegisterPage onStartRegistration={onStartRegistration} onVerifyRegistrationCode={onVerifyRegistrationCode} onCompleteRegistration={onCompleteRegistration} />} />
             <Route path="/register/code" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <RegisterPage onStartRegistration={onStartRegistration} onVerifyRegistrationCode={onVerifyRegistrationCode} onCompleteRegistration={onCompleteRegistration} />} />
             <Route path="/register/password" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <RegisterPage onStartRegistration={onStartRegistration} onVerifyRegistrationCode={onVerifyRegistrationCode} onCompleteRegistration={onCompleteRegistration} />} />
+            <Route path="/password-reset" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <PasswordResetPage onStartPasswordReset={onStartPasswordReset} onVerifyPasswordResetCode={onVerifyPasswordResetCode} onCompletePasswordReset={onCompletePasswordReset} />} />
+            <Route path="/password-reset/code" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <PasswordResetPage onStartPasswordReset={onStartPasswordReset} onVerifyPasswordResetCode={onVerifyPasswordResetCode} onCompletePasswordReset={onCompletePasswordReset} />} />
+            <Route path="/password-reset/new" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <PasswordResetPage onStartPasswordReset={onStartPasswordReset} onVerifyPasswordResetCode={onVerifyPasswordResetCode} onCompletePasswordReset={onCompletePasswordReset} />} />
             <Route path="/login" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <LoginPage onLogin={onLogin} />} />
             <Route path="/tasks" element={<ProtectedRoute isAuthorized={isAuthorized}><TasksPage accessToken={accessToken} apiBase={apiBase} taskApiBase={storage.taskApiBase} profile={profile} showNotification={showNotification} onUpdateAccessToken={onUpdateAccessToken} /></ProtectedRoute>} />
             <Route path="/chats" element={<ProtectedRoute isAuthorized={isAuthorized}><ChatPage accessToken={accessToken} apiBase={apiBase} profile={profile} showNotification={showNotification} onUpdateAccessToken={onUpdateAccessToken} /></ProtectedRoute>} />

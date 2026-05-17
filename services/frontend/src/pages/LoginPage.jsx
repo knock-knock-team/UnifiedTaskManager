@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { PasswordField } from '../ui/PasswordField';
 
 export function LoginPage({ onLogin }) {
   const [email, setEmail] = useState('');
@@ -19,12 +20,20 @@ export function LoginPage({ onLogin }) {
             <span>Email</span>
             <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" name="login-email" autoComplete="username" placeholder="you@команда.рф" required />
           </label>
-          <label className="field-label">
-            <span>Пароль</span>
-            <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" name="login-password" autoComplete="current-password" placeholder="••••••••" required />
-          </label>
+          <PasswordField
+            label="Пароль"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            name="login-password"
+            autoComplete="current-password"
+            placeholder="••••••••"
+            required
+          />
           <button type="submit">Войти</button>
         </form>
+        <p className="auth-secondary-action">
+          <Link to="/password-reset">Забыли пароль?</Link>
+        </p>
         <p className="auth-foot">
           Нет аккаунта? <Link to="/register">Зарегистрироваться</Link>
         </p>

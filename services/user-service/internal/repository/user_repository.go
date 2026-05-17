@@ -36,6 +36,9 @@ type RegistrationVerificationStore interface {
 	UpsertRegistrationVerification(ctx context.Context, item model.RegistrationVerification) error
 	FindRegistrationVerification(ctx context.Context, email string) (model.RegistrationVerification, error)
 	DeleteRegistrationVerification(ctx context.Context, email string) error
+	UpsertPasswordResetVerification(ctx context.Context, item model.PasswordResetVerification) error
+	FindPasswordResetVerification(ctx context.Context, email string) (model.PasswordResetVerification, error)
+	DeletePasswordResetVerification(ctx context.Context, email string) error
 }
 
 type TeamStore interface {
@@ -92,35 +95,37 @@ type inviteRecord struct {
 }
 
 type InMemoryUserRepository struct {
-	mu                        sync.RWMutex
-	byID                      map[string]model.User
-	emailTo                   map[string]string
-	refreshTokens             map[string]refreshTokenRecord
-	registrationVerifications map[string]model.RegistrationVerification
-	userTeams                 map[string]map[string]struct{}
-	teams                     map[string]model.Team
-	teamRoles                 map[string]map[string]model.TeamRole
-	teamMembers               map[string]map[string]model.TeamMember
-	teamInvites               map[string]inviteRecord
-	projects                  map[string]model.Project
-	projectRoles              map[string]map[string]model.ProjectRole
-	projectMember             map[string]map[string]model.ProjectMember
+	mu                         sync.RWMutex
+	byID                       map[string]model.User
+	emailTo                    map[string]string
+	refreshTokens              map[string]refreshTokenRecord
+	registrationVerifications  map[string]model.RegistrationVerification
+	passwordResetVerifications map[string]model.PasswordResetVerification
+	userTeams                  map[string]map[string]struct{}
+	teams                      map[string]model.Team
+	teamRoles                  map[string]map[string]model.TeamRole
+	teamMembers                map[string]map[string]model.TeamMember
+	teamInvites                map[string]inviteRecord
+	projects                   map[string]model.Project
+	projectRoles               map[string]map[string]model.ProjectRole
+	projectMember              map[string]map[string]model.ProjectMember
 }
 
 func NewInMemoryUserRepository() *InMemoryUserRepository {
 	return &InMemoryUserRepository{
-		byID:                      make(map[string]model.User),
-		emailTo:                   make(map[string]string),
-		refreshTokens:             make(map[string]refreshTokenRecord),
-		registrationVerifications: make(map[string]model.RegistrationVerification),
-		userTeams:                 make(map[string]map[string]struct{}),
-		teams:                     make(map[string]model.Team),
-		teamRoles:                 make(map[string]map[string]model.TeamRole),
-		teamMembers:               make(map[string]map[string]model.TeamMember),
-		teamInvites:               make(map[string]inviteRecord),
-		projects:                  make(map[string]model.Project),
-		projectRoles:              make(map[string]map[string]model.ProjectRole),
-		projectMember:             make(map[string]map[string]model.ProjectMember),
+		byID:                       make(map[string]model.User),
+		emailTo:                    make(map[string]string),
+		refreshTokens:              make(map[string]refreshTokenRecord),
+		registrationVerifications:  make(map[string]model.RegistrationVerification),
+		passwordResetVerifications: make(map[string]model.PasswordResetVerification),
+		userTeams:                  make(map[string]map[string]struct{}),
+		teams:                      make(map[string]model.Team),
+		teamRoles:                  make(map[string]map[string]model.TeamRole),
+		teamMembers:                make(map[string]map[string]model.TeamMember),
+		teamInvites:                make(map[string]inviteRecord),
+		projects:                   make(map[string]model.Project),
+		projectRoles:               make(map[string]map[string]model.ProjectRole),
+		projectMember:              make(map[string]map[string]model.ProjectMember),
 	}
 }
 
@@ -297,6 +302,38 @@ func (r *InMemoryUserRepository) DeleteRegistrationVerification(_ context.Contex
 	defer r.mu.Unlock()
 
 	delete(r.registrationVerifications, strings.ToLower(strings.TrimSpace(email)))
+	return nil
+}
+
+func (r *InMemoryUserRepository) UpsertPasswordResetVerification(_ context.Context, item model.PasswordResetVerification) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	email := strings.ToLower(strings.TrimSpace(item.Email))
+	if email == "" {
+		return ErrNotFound
+	}
+	item.Email = email
+	r.passwordResetVerifications[email] = item
+	return nil
+}
+
+func (r *InMemoryUserRepository) FindPasswordResetVerification(_ context.Context, email string) (model.PasswordResetVerification, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	item, ok := r.passwordResetVerifications[strings.ToLower(strings.TrimSpace(email))]
+	if !ok {
+		return model.PasswordResetVerification{}, ErrNotFound
+	}
+	return item, nil
+}
+
+func (r *InMemoryUserRepository) DeletePasswordResetVerification(_ context.Context, email string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.passwordResetVerifications, strings.ToLower(strings.TrimSpace(email)))
 	return nil
 }
 
