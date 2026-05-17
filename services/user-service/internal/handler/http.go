@@ -210,7 +210,7 @@ func (h *HTTPHandler) registerStart(w http.ResponseWriter, r *http.Request) {
 		h.writeServiceError(w, err)
 		return
 	}
-	h.audit(r, "auth_register_start_accepted")
+	h.audit(r, "auth_register_start_accepted", "email_dispatched", resp.EmailDispatched, "suppressed_reason", resp.SuppressedReason)
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
@@ -236,7 +236,7 @@ func (h *HTTPHandler) passwordResetStart(w http.ResponseWriter, r *http.Request)
 		h.writeServiceError(w, err)
 		return
 	}
-	h.audit(r, "auth_password_reset_start_accepted")
+	h.audit(r, "auth_password_reset_start_accepted", "email_dispatched", resp.EmailDispatched, "suppressed_reason", resp.SuppressedReason)
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
