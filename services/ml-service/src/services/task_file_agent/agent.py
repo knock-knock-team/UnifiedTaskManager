@@ -62,6 +62,20 @@ class TaskFileAgentRuntime:
         bound_llm = self.llm.bind_tools(self.tools)
         tool_cache: dict[str, tuple[AgentToolTrace, ToolMessage]] = {}
         try:
+            direct_task_request = self._extract_task_creation_request(user_message)
+            if direct_task_request is not None:
+                yield {"type": "status", "text": "Создаю задачу и прикрепляю файлы...", "tool_name": "", "payload": {}}
+                result = await self._execute_task_creation_request(direct_task_request, tool_cache)
+                for trace in result.tool_calls:
+                    yield {
+                        "type": "tool_end",
+                        "text": "",
+                        "tool_name": trace.tool_name,
+                        "payload": trace.tool_output or {},
+                    }
+                yield {"type": "final", "text": result.answer, "tool_name": "", "payload": {}}
+                return
+
             direct_request = self._extract_column_task_request(user_message)
             if direct_request is not None:
                 yield {"type": "status", "text": "Создаю задачи в нужной колонке...", "tool_name": "", "payload": {}}
@@ -78,28 +92,26 @@ class TaskFileAgentRuntime:
 
             yield {"type": "status", "text": "Думаю над запросом...", "tool_name": "", "payload": {}}
             for _ in range(iterations):
-                streamed_any_text = False
+                buffered_text: list[str] = []
                 collected = None
                 try:
                     async for chunk in bound_llm.astream(messages):
                         collected = chunk if collected is None else collected + chunk
                         chunk_text = self._message_text(getattr(chunk, "content", ""))
                         if chunk_text:
-                            streamed_any_text = True
-                            yield {"type": "token", "text": chunk_text, "tool_name": "", "payload": {}}
+                            buffered_text.append(chunk_text)
                 except Exception:
                     response = await bound_llm.ainvoke(messages)
                 else:
                     response = collected if collected is not None else await bound_llm.ainvoke(messages)
                 messages.append(response)
                 tool_calls = self._extract_tool_calls(response)
-                final_text = self._message_text(response.content)
+                final_text = self._message_text(response.content) or "".join(buffered_text).strip()
 
                 if not tool_calls:
                     answer = final_text or self._build_iteration_limit_answer(traces, completed=False)
-                    if not streamed_any_text:
-                        for chunk in self._chunk_text(answer):
-                            yield {"type": "token", "text": chunk, "tool_name": "", "payload": {}}
+                    for chunk in self._chunk_text(answer):
+                        yield {"type": "token", "text": chunk, "tool_name": "", "payload": {}}
                     yield {"type": "final", "text": answer, "tool_name": "", "payload": {}}
                     return
 
@@ -150,6 +162,10 @@ class TaskFileAgentRuntime:
         traces: list[AgentToolTrace] = []
         bound_llm = self.llm.bind_tools(self.tools)
         tool_cache: dict[str, tuple[AgentToolTrace, ToolMessage]] = {}
+
+        direct_task_request = self._extract_task_creation_request(user_message)
+        if direct_task_request is not None:
+            return await self._execute_task_creation_request(direct_task_request, tool_cache)
 
         direct_request = self._extract_column_task_request(user_message)
         if direct_request is not None:
@@ -244,6 +260,105 @@ class TaskFileAgentRuntime:
             succeeded=True,
             tool_calls=traces,
         )
+
+    async def _execute_task_creation_request(
+        self,
+        request: dict[str, Any],
+        tool_cache: dict[str, tuple[AgentToolTrace, ToolMessage]],
+    ) -> AgentRunResult:
+        traces: list[AgentToolTrace] = []
+        column_id = str(request.get("column_id") or "").strip()
+        column_title = str(request.get("column_title") or "").strip()
+        if column_title and not column_id:
+            list_trace, _ = await self._execute_tool_call(
+                {"id": "direct-list-task-columns", "name": "list_task_columns", "args": {}},
+                tool_cache,
+            )
+            traces.append(list_trace)
+            if list_trace.error is not None or (list_trace.tool_output or {}).get("success") is False:
+                return AgentRunResult(answer="Не удалось получить список колонок.", succeeded=False, tool_calls=traces)
+
+            columns = ((list_trace.tool_output or {}).get("data") or {}).get("columns") or []
+            matched = next(
+                (
+                    column
+                    for column in columns
+                    if str(column.get("title") or "").strip().casefold() == column_title.casefold()
+                ),
+                None,
+            )
+            if matched is None:
+                create_column_trace, _ = await self._execute_tool_call(
+                    {"id": "direct-create-task-column", "name": "create_task_column", "args": {"title": column_title}},
+                    tool_cache,
+                )
+                traces.append(create_column_trace)
+                if create_column_trace.error is not None or (create_column_trace.tool_output or {}).get("success") is False:
+                    return AgentRunResult(answer=f"Не удалось создать колонку «{column_title}».", succeeded=False, tool_calls=traces)
+                matched = ((create_column_trace.tool_output or {}).get("data") or {}).get("column") or {}
+            column_id = str(matched.get("id") or "").strip()
+            if not column_id:
+                return AgentRunResult(answer=f"Не удалось определить id колонки «{column_title}».", succeeded=False, tool_calls=traces)
+
+        created_tasks: list[dict[str, Any]] = []
+        attached_count = 0
+        tasks = request.get("tasks") or []
+        for index, task in enumerate(tasks, start=1):
+            task_args = {
+                "title": task["title"],
+                "description": task.get("description"),
+                "column_id": column_id or None,
+                "priority": task.get("priority"),
+                "due_at": task.get("due_at"),
+                "assignee_user_id": task.get("assignee_user_id"),
+                "assignee_name": task.get("assignee_name"),
+            }
+            task_trace, _ = await self._execute_tool_call(
+                {
+                    "id": f"direct-create-task-{index}",
+                    "name": "create_task",
+                    "args": {key: value for key, value in task_args.items() if value is not None},
+                },
+                tool_cache,
+            )
+            traces.append(task_trace)
+            if task_trace.error is not None or (task_trace.tool_output or {}).get("success") is False:
+                continue
+
+            created = ((task_trace.tool_output or {}).get("data") or {}).get("task") or {}
+            task_id = str(created.get("id") or "").strip()
+            created_tasks.append(created)
+            if not task_id:
+                continue
+
+            for file_index, file_path in enumerate(task.get("file_paths") or [], start=1):
+                attach_trace, _ = await self._execute_tool_call(
+                    {
+                        "id": f"direct-attach-file-{index}-{file_index}",
+                        "name": "attach_file_to_task",
+                        "args": {"task_id": task_id, "file_path": file_path},
+                    },
+                    tool_cache,
+                )
+                traces.append(attach_trace)
+                if attach_trace.error is None and (attach_trace.tool_output or {}).get("success") is not False:
+                    attached_count += 1
+
+        if not created_tasks:
+            return AgentRunResult(answer="Не удалось создать задачу.", succeeded=False, tool_calls=traces)
+
+        titles = [str(task.get("title") or "").strip() for task in created_tasks if str(task.get("title") or "").strip()]
+        answer_parts = [f"Готово: создал {len(created_tasks)} задач(и)"]
+        if titles:
+            answer_parts.append("«" + "», «".join(titles[:3]) + "»")
+        if attached_count:
+            answer_parts.append(f"и прикрепил {attached_count} файл(а)")
+        if column_title:
+            answer_parts.append(f"в колонке «{column_title}»")
+        answer = " ".join(answer_parts) + "."
+        expected_attachments = sum(len(task.get("file_paths") or []) for task in tasks)
+        succeeded = len(created_tasks) == len(tasks) and attached_count == expected_attachments
+        return AgentRunResult(answer=answer, succeeded=succeeded, tool_calls=traces)
 
     async def _execute_tool_call(
         self,
@@ -343,6 +458,207 @@ class TaskFileAgentRuntime:
             return None
 
         return {"column_title": column_match.group(1).strip(), "task_titles": task_titles}
+
+    @classmethod
+    def _extract_task_creation_request(cls, user_message: str) -> dict[str, Any] | None:
+        text = str(user_message or "").strip()
+        if not text:
+            return None
+        lower = text.lower()
+        if not any(marker in lower for marker in ("создай задач", "создать задач", "добавь задач", "добавить задач", "create task", "add task")):
+            return None
+
+        column_title = cls._extract_column_title(text)
+        common_files = cls._extract_file_paths(text)
+        common_description = cls._extract_description(text)
+        common_priority = cls._extract_priority(text)
+
+        numbered_lines = [
+            match.group(1).strip()
+            for match in re.finditer(r"(?m)^\s*(?:\d+[\).]|[-*])\s+(.+?)\s*$", text)
+            if match.group(1).strip()
+        ]
+        tasks: list[dict[str, Any]] = []
+        if numbered_lines:
+            for line in numbered_lines:
+                item = cls._extract_task_item(line)
+                if item is not None:
+                    if not item.get("description"):
+                        item["description"] = common_description
+                    if not item.get("priority"):
+                        item["priority"] = common_priority
+                    item["file_paths"] = cls._dedupe_strings([*(item.get("file_paths") or []), *common_files])
+                    tasks.append(item)
+        else:
+            title = cls._extract_task_title(text)
+            description = common_description
+            if not title and description:
+                title = cls._title_from_description(description)
+            if title:
+                tasks.append(
+                    {
+                        "title": title,
+                        "description": description,
+                        "priority": common_priority,
+                        "file_paths": common_files,
+                    }
+                )
+
+        normalized_tasks = []
+        for task in tasks:
+            title = str(task.get("title") or "").strip()
+            if not title:
+                continue
+            normalized_tasks.append(
+                {
+                    "title": title[:300],
+                    "description": cls._clean_optional_text(task.get("description")),
+                    "priority": task.get("priority"),
+                    "file_paths": cls._dedupe_strings(task.get("file_paths") or []),
+                }
+            )
+        if not normalized_tasks:
+            return None
+        return {"column_title": column_title, "tasks": normalized_tasks}
+
+    @classmethod
+    def _extract_task_item(cls, text: str) -> dict[str, Any] | None:
+        title = cls._extract_task_title(text, allow_plain=True)
+        description = cls._extract_description(text)
+        if not title and description:
+            title = cls._title_from_description(description)
+        if not title:
+            return None
+        return {
+            "title": title,
+            "description": description,
+            "priority": cls._extract_priority(text),
+            "file_paths": cls._extract_file_paths(text),
+        }
+
+    @classmethod
+    def _extract_column_title(cls, text: str) -> str | None:
+        patterns = [
+            r'колонк[ауеи]\s+["«](.+?)["»]',
+            r'["«](.+?)["»]\s*(?:колонк|column)',
+            r'(?:в|in)\s+(?:колонк[уе]|column)\s+([^\n,.;]+)',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return cls._clean_title(cls._strip_task_metadata(match.group(1)))
+        return None
+
+    @classmethod
+    def _extract_task_title(cls, text: str, *, allow_plain: bool = False) -> str | None:
+        patterns = [
+            r'(?:названи[еем]|title|name)\s*[:\-]\s*["«](.+?)["»]',
+            r'(?:названи[еем]|title|name)\s*[:\-]\s*([^\n]+)',
+            r'(?:задач[ауи]?|task)\s+(?:с\s+названием|под\s+названием|called|named)\s+["«](.+?)["»]',
+            r'(?:создай|создать|добавь|добавить)\s+задач[ауи]?\s*[:\-]?\s*["«](.+?)["»]',
+            r'(?:create|add)\s+task\s*[:\-]?\s*["«](.+?)["»]',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return cls._clean_title(match.group(1))
+
+        source = text
+        if not allow_plain:
+            match = re.search(r'(?:создай|создать|добавь|добавить)\s+задач[ауи]?\s*[:\-]?\s*(.+)$', text, flags=re.IGNORECASE | re.DOTALL)
+            if not match:
+                match = re.search(r'(?:create|add)\s+task\s*[:\-]?\s*(.+)$', text, flags=re.IGNORECASE | re.DOTALL)
+            if match:
+                source = match.group(1)
+            else:
+                return None
+        return cls._clean_title(cls._strip_task_metadata(source))
+
+    @staticmethod
+    def _extract_description(text: str) -> str | None:
+        patterns = [
+            r'(?:описани[еем]|description|desc)\s*[:\-]\s*["«](.+?)["»]',
+            r'(?:описани[еем]|description|desc)\s*[:\-]\s*(.+?)(?=(?:\s+(?:прикреп|файл|files?|в\s+колонк|приоритет|priority|дедлайн|due)|$))',
+            r'(?:с\s+описанием|with\s+description)\s+["«](.+?)["»]',
+            r'(?:с\s+описанием|with\s+description)\s+(.+?)(?=(?:\s+(?:прикреп|файл|files?|в\s+колонк|приоритет|priority|дедлайн|due)|$))',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+            if match:
+                return TaskFileAgentRuntime._clean_optional_text(match.group(1))
+        return None
+
+    @classmethod
+    def _extract_file_paths(cls, text: str) -> list[str]:
+        candidates: list[str] = []
+        for match in re.finditer(r'(?:прикреп(?:и|ить)?|файл(?:ы)?|files?|attach)\s+["«](.+?)["»]', text, flags=re.IGNORECASE):
+            candidates.extend(cls._split_file_candidates(match.group(1)))
+        for match in re.finditer(r'(?<!\w)([\w.@+/\-\\]+\.[A-Za-z0-9]{1,12})(?!\w)', text):
+            candidates.append(match.group(1))
+        return cls._dedupe_strings(candidate for candidate in candidates if cls._looks_like_file_path(candidate))
+
+    @staticmethod
+    def _extract_priority(text: str) -> str | None:
+        lower = text.lower()
+        if re.search(r'(?:приоритет|priority)\s*[:\-]?\s*(?:high|высок)', lower):
+            return "high"
+        if re.search(r'(?:приоритет|priority)\s*[:\-]?\s*(?:low|низк)', lower):
+            return "low"
+        if re.search(r'(?:приоритет|priority)\s*[:\-]?\s*(?:medium|средн)', lower):
+            return "medium"
+        return None
+
+    @staticmethod
+    def _strip_task_metadata(text: str) -> str:
+        value = re.split(
+            r'\s+(?:описани[еем]|description|desc|с\s+описанием|with\s+description|прикреп|файл(?:ы)?|files?|attach|в\s+колонк[уе]|in\s+column|приоритет|priority|дедлайн|due)\b',
+            text,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        return value
+
+    @staticmethod
+    def _clean_title(value: str | None) -> str | None:
+        cleaned = TaskFileAgentRuntime._clean_optional_text(value)
+        if not cleaned:
+            return None
+        return cleaned.strip(" .;:,")
+
+    @staticmethod
+    def _clean_optional_text(value: Any) -> str | None:
+        if value is None:
+            return None
+        cleaned = str(value).strip().strip("\"'«»").strip()
+        return cleaned or None
+
+    @staticmethod
+    def _title_from_description(description: str) -> str:
+        first_sentence = re.split(r'(?<=[.!?])\s+', description.strip(), maxsplit=1)[0]
+        return first_sentence[:80].strip(" .;:,") or "Новая задача"
+
+    @staticmethod
+    def _split_file_candidates(value: str) -> list[str]:
+        return [item.strip(" \t\r\n,;") for item in re.split(r'[,;\n]+', value) if item.strip(" \t\r\n,;")]
+
+    @staticmethod
+    def _looks_like_file_path(value: str) -> bool:
+        candidate = value.strip()
+        if not candidate or " " in candidate:
+            return False
+        return bool(re.search(r'\.[A-Za-z0-9]{1,12}$', candidate) or "/" in candidate or "\\" in candidate)
+
+    @staticmethod
+    def _dedupe_strings(values) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            item = str(value or "").strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            result.append(item)
+        return result
 
     @staticmethod
     def _extract_tool_calls(response: Any) -> list[dict[str, Any]]:
@@ -491,6 +807,8 @@ class TaskFileAgentRuntime:
             "If the user says 'assign to me' and actor_user_id is available, use it as assignee_user_id.\n"
             "If the request mixes supported task/file actions with unsupported actions like source code editing, complete the supported actions first and explicitly say what is out of scope.\n"
             "When the user describes a new piece of work without naming an existing task, you may create a new task with a concise title and use the rest as description.\n"
+            "For create, update, delete, status, assignment, and file attachment requests, call the matching tool instead of only describing what you would do.\n"
+            "Never expose hidden reasoning or step-by-step internal thoughts to the user.\n"
             "Do not call the same tool with the same arguments repeatedly. If something is ambiguous, ask for a concise clarification.\n"
             "After enough tool calls to satisfy the supported part of the request, stop and provide the final answer.\n"
             "If a tool returns an error, explain it clearly and try another safe step only when justified.\n"
