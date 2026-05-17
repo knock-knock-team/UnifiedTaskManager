@@ -86,6 +86,8 @@ type ProfileUpdate struct {
 type RegistrationStartResult struct {
 	Email            string `json:"email"`
 	ExpiresInSeconds int64  `json:"expiresInSeconds"`
+	EmailDispatched  bool   `json:"-"`
+	SuppressedReason string `json:"-"`
 }
 
 type userService struct {
@@ -114,7 +116,7 @@ func (s *userService) StartRegistration(email string) (RegistrationStartResult, 
 		return RegistrationStartResult{}, ErrBadRequest
 	}
 	if _, err := s.repo.FindByEmail(email); err == nil {
-		return RegistrationStartResult{Email: email, ExpiresInSeconds: 600}, nil
+		return RegistrationStartResult{Email: email, ExpiresInSeconds: 600, SuppressedReason: "email_exists"}, nil
 	} else if !errors.Is(err, repository.ErrNotFound) {
 		return RegistrationStartResult{}, err
 	}
@@ -148,7 +150,7 @@ func (s *userService) StartRegistration(email string) (RegistrationStartResult, 
 		_ = s.repo.DeleteRegistrationVerification(context.Background(), email)
 		return RegistrationStartResult{}, err
 	}
-	return RegistrationStartResult{Email: email, ExpiresInSeconds: int64(time.Until(expiresAt).Seconds())}, nil
+	return RegistrationStartResult{Email: email, ExpiresInSeconds: int64(time.Until(expiresAt).Seconds()), EmailDispatched: true}, nil
 }
 
 func (s *userService) VerifyRegistrationCode(email, code string) (RegistrationStartResult, error) {
@@ -187,7 +189,7 @@ func (s *userService) StartPasswordReset(email string) (RegistrationStartResult,
 	}
 	user, err := s.repo.FindByEmail(email)
 	if errors.Is(err, repository.ErrNotFound) {
-		return RegistrationStartResult{Email: email, ExpiresInSeconds: 600}, nil
+		return RegistrationStartResult{Email: email, ExpiresInSeconds: 600, SuppressedReason: "email_not_found"}, nil
 	}
 	if err != nil {
 		return RegistrationStartResult{}, err
@@ -221,7 +223,7 @@ func (s *userService) StartPasswordReset(email string) (RegistrationStartResult,
 		_ = s.repo.DeletePasswordResetVerification(context.Background(), email)
 		return RegistrationStartResult{}, err
 	}
-	return RegistrationStartResult{Email: email, ExpiresInSeconds: int64(time.Until(expiresAt).Seconds())}, nil
+	return RegistrationStartResult{Email: email, ExpiresInSeconds: int64(time.Until(expiresAt).Seconds()), EmailDispatched: true}, nil
 }
 
 func (s *userService) VerifyPasswordResetCode(email, code string) (RegistrationStartResult, error) {
