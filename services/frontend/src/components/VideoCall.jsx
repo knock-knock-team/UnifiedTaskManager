@@ -5,6 +5,34 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { setLastVideoCallId } from '../lib/lastVideoCallId';
 import '../styles/VideoCall.css';
 
+// Простые inline SVG-иконки — автономные, без внешних зависимостей
+function IconMic({ active = false, size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+      <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z" fill={active ? '#1f8ceb' : '#666'} />
+      <path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.93V21a1 1 0 1 0 2 0v-3.07A7 7 0 0 0 19 11z" fill={active ? '#1f8ceb' : '#999'} />
+    </svg>
+  );
+}
+
+function IconLink({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+      <path d="M10.59 13.41a2 2 0 0 0 2.82 0l1.59-1.59a2 2 0 0 0 0-2.82 2 2 0 0 0-2.82 0L10.59 10.6a2 2 0 0 0 0 2.81z" stroke="#444" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M7.05 17.95a6 6 0 0 1 0-8.49l1.59-1.59" stroke="#444" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M16.95 6.05a6 6 0 0 1 0 8.49l-1.59 1.59" stroke="#444" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconEnd({ size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+      <path d="M21 16.5v2a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 3.5 5.18 2 2 0 0 1 5.5 3h2a2 2 0 0 1 2 1.72c.12.9.37 1.77.73 2.58a2 2 0 0 1-.45 2.11L9.7 10.7a13.16 13.16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.11-.45c.81.36 1.68.61 2.58.73A2 2 0 0 1 21 16.5z" fill="#c0392b" />
+    </svg>
+  );
+}
+
 /**
  * Main component for group video calling/meetings
  * Supports multiple participants with mesh topology
@@ -583,7 +611,7 @@ export function VideoCall({
           onClick={handleToggleAudio}
           title={isAudioEnabled ? 'Выключить микрофон' : 'Включить микрофон'}
         >
-          🎤
+          <IconMic active={isAudioEnabled} />
         </button>
 
         <button
@@ -591,7 +619,10 @@ export function VideoCall({
           onClick={handleCopyLink}
           title="Копировать ссылку на встречу"
         >
-          🔗 {showCopyButton ? 'Скопировано!' : 'Ссылка'}
+          <span style={{display: 'inline-flex', alignItems: 'center', gap: 6}}>
+            <IconLink />
+            <span>{showCopyButton ? 'Скопировано!' : 'Ссылка'}</span>
+          </span>
         </button>
 
         <button
@@ -599,7 +630,7 @@ export function VideoCall({
           onClick={handleCallEnd}
           title="Завершить звонок"
         >
-          ☎️
+          <IconEnd />
         </button>
       </div>
 
@@ -638,7 +669,7 @@ function ParticipantAudioTile({ stream, userId, label, audioEnabled = false, isL
     <div className={`audio-tile ${audioEnabled ? 'mic-on' : 'mic-off'}`}>
       {!isLocal && stream ? <audio ref={audioRef} autoPlay playsInline /> : null}
       <div className="audio-avatar" aria-hidden="true">
-        {audioEnabled ? '🎙' : 'MIC'}
+        <IconMic active={audioEnabled} size={28} />
       </div>
       <div className="audio-tile-title">{label || userId.slice(0, 8)}</div>
       <div className={`mic-status-pill ${audioEnabled ? 'on' : 'off'}`}>
