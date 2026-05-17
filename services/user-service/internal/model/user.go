@@ -47,3 +47,13 @@ type AuthResponse struct {
 	User   User      `json:"user"`
 	Tokens TokenPair `json:"tokens"`
 }
+
+type RegistrationVerification struct {
+	Email        string
+	Name         string
+	CodeHash     string
+	AttemptCount int
+	ExpiresAt    time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}

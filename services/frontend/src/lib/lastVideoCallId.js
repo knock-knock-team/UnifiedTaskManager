@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'vg:lastVideoCallId';
+const STORAGE_KEY = 'utm:lastVideoCallId';
 
 export function getLastVideoCallId() {
   try {

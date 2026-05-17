@@ -95,6 +95,7 @@ services:
       FILE_SERVICE_STORAGE_ROOT: /var/lib/unified-task-manager-file-service/storage
       FILE_SERVICE_RABBITMQ_ENABLED: "true"
       FILE_SERVICE_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      FILE_SERVICE_USER_SERVICE_URL: http://user-service:8082
       FILE_SERVICE_USER_EXISTS_QUEUE: user-service.user-exists
       FILE_SERVICE_DELETED_FILE_QUEUE: task-service.file-deleted
       CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}

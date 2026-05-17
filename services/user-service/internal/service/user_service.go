@@ -22,12 +22,17 @@ import (
 )
 
 var (
-	ErrUnauthorized = errors.New("unauthorized")
-	ErrForbidden    = errors.New("forbidden")
-	ErrBadRequest   = errors.New("bad request")
+	ErrUnauthorized     = errors.New("unauthorized")
+	ErrForbidden        = errors.New("forbidden")
+	ErrBadRequest       = errors.New("bad request")
+	ErrEmailUnavailable = errors.New("email unavailable")
+	ErrTooManyRequests  = errors.New("too many requests")
 )
 
 type UserService interface {
+	StartRegistration(email string) (RegistrationStartResult, error)
+	VerifyRegistrationCode(email, code string) (RegistrationStartResult, error)
+	CompleteRegistration(email, code, password, name string) (model.AuthResponse, error)
 	Register(email, password, name string) (model.AuthResponse, error)
 	Login(email, password string) (model.AuthResponse, error)
 	Refresh(refreshToken string) (model.TokenPair, error)
@@ -75,13 +80,125 @@ type ProfileUpdate struct {
 	Password       *string
 }
 
+type RegistrationStartResult struct {
+	Email            string `json:"email"`
+	ExpiresInSeconds int64  `json:"expiresInSeconds"`
+}
+
 type userService struct {
-	repo   repository.UserStore
-	tokens *TokenManager
+	repo        repository.UserStore
+	tokens      *TokenManager
+	emailSender EmailSender
 }
 
 func NewUserService(repo repository.UserStore, tokens *TokenManager) UserService {
-	return &userService{repo: repo, tokens: tokens}
+	return NewUserServiceWithEmailSender(repo, tokens, NoopEmailSender{})
+}
+
+func NewUserServiceWithEmailSender(repo repository.UserStore, tokens *TokenManager, emailSender EmailSender) UserService {
+	if emailSender == nil {
+		emailSender = NoopEmailSender{}
+	}
+	return &userService{repo: repo, tokens: tokens, emailSender: emailSender}
+}
+
+func (s *userService) StartRegistration(email string) (RegistrationStartResult, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return RegistrationStartResult{}, ErrBadRequest
+	}
+	if _, err := mail.ParseAddress(email); err != nil {
+		return RegistrationStartResult{}, ErrBadRequest
+	}
+	if _, err := s.repo.FindByEmail(email); err == nil {
+		return RegistrationStartResult{Email: email, ExpiresInSeconds: 600}, nil
+	} else if !errors.Is(err, repository.ErrNotFound) {
+		return RegistrationStartResult{}, err
+	}
+	if existing, err := s.repo.FindRegistrationVerification(context.Background(), email); err == nil {
+		if time.Since(existing.CreatedAt) < 2*time.Minute {
+			return RegistrationStartResult{}, ErrTooManyRequests
+		}
+	} else if !errors.Is(err, repository.ErrNotFound) {
+		return RegistrationStartResult{}, err
+	}
+
+	code, err := newRegistrationCode()
+	if err != nil {
+		return RegistrationStartResult{}, err
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(10 * time.Minute)
+	item := model.RegistrationVerification{
+		Email:        email,
+		Name:         "",
+		CodeHash:     hashRegistrationCode(email, code),
+		AttemptCount: 0,
+		ExpiresAt:    expiresAt,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := s.repo.UpsertRegistrationVerification(context.Background(), item); err != nil {
+		return RegistrationStartResult{}, err
+	}
+	if err := s.emailSender.SendRegistrationCode(email, "", code); err != nil {
+		_ = s.repo.DeleteRegistrationVerification(context.Background(), email)
+		return RegistrationStartResult{}, err
+	}
+	return RegistrationStartResult{Email: email, ExpiresInSeconds: int64(time.Until(expiresAt).Seconds())}, nil
+}
+
+func (s *userService) VerifyRegistrationCode(email, code string) (RegistrationStartResult, error) {
+	item, err := s.verifyRegistrationCode(email, code)
+	if err != nil {
+		return RegistrationStartResult{}, err
+	}
+	return RegistrationStartResult{Email: item.Email, ExpiresInSeconds: int64(time.Until(item.ExpiresAt).Seconds())}, nil
+}
+
+func (s *userService) CompleteRegistration(email, code, password, name string) (model.AuthResponse, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	code = strings.TrimSpace(code)
+	name = strings.TrimSpace(name)
+	if email == "" || code == "" || password == "" || name == "" || len(password) < 8 {
+		return model.AuthResponse{}, ErrBadRequest
+	}
+	if _, err := s.verifyRegistrationCode(email, code); err != nil {
+		return model.AuthResponse{}, err
+	}
+	resp, err := s.Register(email, password, name)
+	if err != nil {
+		return model.AuthResponse{}, err
+	}
+	_ = s.repo.DeleteRegistrationVerification(context.Background(), email)
+	return resp, nil
+}
+
+func (s *userService) verifyRegistrationCode(email, code string) (model.RegistrationVerification, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	code = strings.TrimSpace(code)
+	if email == "" || code == "" {
+		return model.RegistrationVerification{}, ErrBadRequest
+	}
+	item, err := s.repo.FindRegistrationVerification(context.Background(), email)
+	if err != nil {
+		return model.RegistrationVerification{}, ErrUnauthorized
+	}
+	if time.Now().UTC().After(item.ExpiresAt) {
+		_ = s.repo.DeleteRegistrationVerification(context.Background(), email)
+		return model.RegistrationVerification{}, ErrUnauthorized
+	}
+	if item.AttemptCount >= 5 {
+		_ = s.repo.DeleteRegistrationVerification(context.Background(), email)
+		return model.RegistrationVerification{}, ErrUnauthorized
+	}
+	if subtle.ConstantTimeCompare([]byte(item.CodeHash), []byte(hashRegistrationCode(email, code))) != 1 {
+		item.AttemptCount++
+		item.UpdatedAt = time.Now().UTC()
+		_ = s.repo.UpsertRegistrationVerification(context.Background(), item)
+		return model.RegistrationVerification{}, ErrUnauthorized
+	}
+	return item, nil
 }
 
 func (s *userService) Register(email, password, name string) (model.AuthResponse, error) {
@@ -1189,6 +1306,23 @@ func (s *userService) issueTokenPair(user model.User) (model.TokenPair, error) {
 func hashToken(token string) string {
 	sum := sha256Sum(token)
 	return hex.EncodeToString(sum[:])
+}
+
+func hashRegistrationCode(email, code string) string {
+	sum := sha256Sum(strings.ToLower(strings.TrimSpace(email)) + ":" + strings.TrimSpace(code))
+	return hex.EncodeToString(sum[:])
+}
+
+func newRegistrationCode() (string, error) {
+	buf := make([]byte, 4)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	value := int(buf[0])<<24 | int(buf[1])<<16 | int(buf[2])<<8 | int(buf[3])
+	if value < 0 {
+		value = -value
+	}
+	return fmt.Sprintf("%06d", value%1000000), nil
 }
 
 func sha256Sum(value string) [32]byte {

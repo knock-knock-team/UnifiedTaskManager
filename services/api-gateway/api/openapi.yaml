@@ -59,7 +59,7 @@ paths:
   /v1/auth/register:
     post:
       tags: [Auth]
-      summary: Register a new user
+      summary: Complete registration with email verification code
       operationId: registerUser
       security: []
       requestBody:
@@ -77,6 +77,80 @@ paths:
                 $ref: '#/components/schemas/AuthResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /v1/auth/register/start:
+    post:
+      tags: [Auth]
+      summary: Send email verification code
+      operationId: startRegistration
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterStartRequest'
+      responses:
+        '202':
+          description: Verification code sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterStartResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          description: Email delivery unavailable
+
+  /v1/auth/register/verify:
+    post:
+      tags: [Auth]
+      summary: Verify email registration code
+      operationId: verifyRegistrationCode
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterVerifyRequest'
+      responses:
+        '200':
+          description: Verification code accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterStartResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/auth/register/complete:
+    post:
+      tags: [Auth]
+      summary: Complete registration with email verification code
+      operationId: completeRegistration
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '409':
           $ref: '#/components/responses/Conflict'
 
@@ -1898,11 +1972,14 @@ components:
 
     RegisterRequest:
       type: object
-      required: [email, password, name]
+      required: [email, code, password, name]
       properties:
         email:
           type: string
           format: email
+        code:
+          type: string
+          pattern: '^\d{6}$'
         password:
           type: string
           format: password
@@ -1912,6 +1989,35 @@ components:
           type: string
           minLength: 1
           maxLength: 120
+
+    RegisterStartRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+
+    RegisterVerifyRequest:
+      type: object
+      required: [email, code]
+      properties:
+        email:
+          type: string
+          format: email
+        code:
+          type: string
+          pattern: '^\d{6}$'
+
+    RegisterStartResponse:
+      type: object
+      required: [email, expiresInSeconds]
+      properties:
+        email:
+          type: string
+          format: email
+        expiresInSeconds:
+          type: integer
 
     LoginRequest:
       type: object

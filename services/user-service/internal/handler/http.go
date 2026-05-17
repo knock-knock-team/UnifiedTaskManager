@@ -68,6 +68,9 @@ func (h *HTTPHandler) Routes() http.Handler {
 	mux.HandleFunc("/healthz", h.healthz)
 	mux.HandleFunc("/readyz", h.readyz)
 	mux.Handle("/metrics", observability.MetricsHandler())
+	mux.HandleFunc("/v1/auth/register/start", h.registerStart)
+	mux.HandleFunc("/v1/auth/register/verify", h.registerVerify)
+	mux.HandleFunc("/v1/auth/register/complete", h.registerComplete)
 	mux.HandleFunc("/v1/auth/register", h.register)
 	mux.HandleFunc("/v1/auth/login", h.login)
 	mux.HandleFunc("/v1/auth/refresh", h.refresh)
@@ -165,15 +168,98 @@ func (h *HTTPHandler) register(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Email    string `json:"email"`
+		Code     string `json:"code"`
 		Password string `json:"password"`
 		Name     string `json:"name"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	resp, err := h.svc.Register(req.Email, req.Password, req.Name)
+	resp, err := h.svc.CompleteRegistration(req.Email, req.Code, req.Password, req.Name)
 	if err != nil {
 		h.security(r, "auth_register_failed", "reason", err.Error())
+		h.writeServiceError(w, err)
+		return
+	}
+	h.audit(r, "auth_registered", "target_user_id", resp.User.ID, "role", resp.User.Role, "status", resp.User.Status)
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *HTTPHandler) registerStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if !h.allowRate(r, "register_start", 5, time.Minute) {
+		h.security(r, "rate_limited", "scope", "register_start")
+		writeJSON(w, http.StatusTooManyRequests, errorBody("RATE_LIMITED", "Too many requests"))
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.StartRegistration(req.Email)
+	if err != nil {
+		h.security(r, "auth_register_code_failed", "reason", err.Error())
+		h.writeServiceError(w, err)
+		return
+	}
+	h.audit(r, "auth_register_code_sent")
+	writeJSON(w, http.StatusAccepted, resp)
+}
+
+func (h *HTTPHandler) registerVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if !h.allowRate(r, "register_verify", 10, time.Minute) {
+		h.security(r, "rate_limited", "scope", "register_verify")
+		writeJSON(w, http.StatusTooManyRequests, errorBody("RATE_LIMITED", "Too many requests"))
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.VerifyRegistrationCode(req.Email, req.Code)
+	if err != nil {
+		h.security(r, "auth_register_verify_failed", "reason", err.Error())
+		h.writeServiceError(w, err)
+		return
+	}
+	h.audit(r, "auth_register_code_verified")
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *HTTPHandler) registerComplete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if !h.allowRate(r, "register_complete", 10, time.Minute) {
+		h.security(r, "rate_limited", "scope", "register_complete")
+		writeJSON(w, http.StatusTooManyRequests, errorBody("RATE_LIMITED", "Too many requests"))
+		return
+	}
+	var req struct {
+		Email    string `json:"email"`
+		Code     string `json:"code"`
+		Password string `json:"password"`
+		Name     string `json:"name"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	resp, err := h.svc.CompleteRegistration(req.Email, req.Code, req.Password, req.Name)
+	if err != nil {
+		h.security(r, "auth_register_complete_failed", "reason", err.Error())
 		h.writeServiceError(w, err)
 		return
 	}
@@ -842,6 +928,10 @@ func (h *HTTPHandler) writeServiceError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnauthorized, errorBody("UNAUTHORIZED", "Unauthorized"))
 	case errors.Is(err, service.ErrForbidden):
 		writeJSON(w, http.StatusForbidden, errorBody("FORBIDDEN", "Forbidden"))
+	case errors.Is(err, service.ErrEmailUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, errorBody("EMAIL_UNAVAILABLE", "Email delivery is unavailable"))
+	case errors.Is(err, service.ErrTooManyRequests):
+		writeJSON(w, http.StatusTooManyRequests, errorBody("RATE_LIMITED", "Please wait before requesting another code"))
 	case errors.Is(err, repository.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, errorBody("NOT_FOUND", "Resource not found"))
 	case errors.Is(err, repository.ErrEmailConflict):

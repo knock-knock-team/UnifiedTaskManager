@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     file_service_deleted_file_queue: str = "task-service.file-deleted"
     file_service_agent_commands_queue: str = "file-service.agent-commands"
     file_service_rpc_timeout_seconds: float = 3.0
+    file_service_user_service_url: str = "http://user-service:8082"
 
     jwt_secret: str = ""
     cors_allow_origin: str = "*"

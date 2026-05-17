@@ -94,6 +94,17 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires_at ON refresh_tokens(expires_at);
 
+CREATE TABLE IF NOT EXISTS registration_verifications (
+	email TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	code_hash TEXT NOT NULL,
+	attempt_count INT NOT NULL DEFAULT 0,
+	expires_at TIMESTAMPTZ NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_registration_verifications_expires_at ON registration_verifications(expires_at);
+
 CREATE TABLE IF NOT EXISTS user_teams (
 	user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	team_id TEXT NOT NULL,
@@ -663,6 +674,58 @@ FOR UPDATE`
 	}
 
 	return tx.Commit()
+}
+
+func (r *PostgresUserRepository) UpsertRegistrationVerification(ctx context.Context, item model.RegistrationVerification) error {
+	const q = `
+INSERT INTO registration_verifications (email, name, code_hash, attempt_count, expires_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (email) DO UPDATE
+SET name = EXCLUDED.name,
+	code_hash = EXCLUDED.code_hash,
+	attempt_count = EXCLUDED.attempt_count,
+	expires_at = EXCLUDED.expires_at,
+	updated_at = EXCLUDED.updated_at`
+	_, err := r.db.ExecContext(
+		ctx,
+		q,
+		strings.ToLower(strings.TrimSpace(item.Email)),
+		item.Name,
+		item.CodeHash,
+		item.AttemptCount,
+		item.ExpiresAt.UTC(),
+		item.CreatedAt.UTC(),
+		item.UpdatedAt.UTC(),
+	)
+	return err
+}
+
+func (r *PostgresUserRepository) FindRegistrationVerification(ctx context.Context, email string) (model.RegistrationVerification, error) {
+	const q = `
+SELECT email, name, code_hash, attempt_count, expires_at, created_at, updated_at
+FROM registration_verifications
+WHERE email = $1`
+	var item model.RegistrationVerification
+	if err := r.db.QueryRowContext(ctx, q, strings.ToLower(strings.TrimSpace(email))).Scan(
+		&item.Email,
+		&item.Name,
+		&item.CodeHash,
+		&item.AttemptCount,
+		&item.ExpiresAt,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.RegistrationVerification{}, ErrNotFound
+		}
+		return model.RegistrationVerification{}, err
+	}
+	return item, nil
+}
+
+func (r *PostgresUserRepository) DeleteRegistrationVerification(ctx context.Context, email string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM registration_verifications WHERE email = $1`, strings.ToLower(strings.TrimSpace(email)))
+	return err
 }
 
 func (r *PostgresUserRepository) ListTeamIDsByUserID(ctx context.Context, userID string) ([]string, error) {

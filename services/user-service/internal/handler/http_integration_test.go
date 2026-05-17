@@ -14,26 +14,47 @@ import (
 	"unified-task-manager/services/user-service/internal/service"
 )
 
-func newIntegrationServer(t *testing.T) (*httptest.Server, *repository.InMemoryUserRepository, service.UserService) {
+type captureEmailSender struct {
+	code string
+}
+
+func (s *captureEmailSender) SendRegistrationCode(_, _, code string) error {
+	s.code = code
+	return nil
+}
+
+func newIntegrationServer(t *testing.T) (*httptest.Server, *repository.InMemoryUserRepository, service.UserService, *captureEmailSender) {
 	t.Helper()
 	repo := repository.NewInMemoryUserRepository()
 	tokens := service.NewTokenManager("integration-secret", 15*time.Minute, 24*time.Hour)
-	svc := service.NewUserService(repo, tokens)
+	emailSender := &captureEmailSender{}
+	svc := service.NewUserServiceWithEmailSender(repo, tokens, emailSender)
 
 	if _, err := svc.BootstrapAdmin("admin@local.dev", "admin12345", "Admin"); err != nil {
 		t.Fatalf("bootstrap admin failed: %v", err)
 	}
 
 	h := NewHTTPHandler(svc)
-	return httptest.NewServer(h.Routes()), repo, svc
+	return httptest.NewServer(h.Routes()), repo, svc, emailSender
 }
 
 func TestIntegrationAuthRBACAndCRUD(t *testing.T) {
-	ts, _, _ := newIntegrationServer(t)
+	ts, _, _, emailSender := newIntegrationServer(t)
 	defer ts.Close()
 
-	registered := postJSON(t, ts.URL+"/v1/auth/register", map[string]interface{}{
+	postJSON(t, ts.URL+"/v1/auth/register/start", map[string]interface{}{
+		"email": "user1@example.com",
+	}, http.StatusAccepted)
+	if emailSender.code == "" {
+		t.Fatal("expected registration code to be sent")
+	}
+	postJSON(t, ts.URL+"/v1/auth/register/verify", map[string]interface{}{
+		"email": "user1@example.com",
+		"code":  emailSender.code,
+	}, http.StatusOK)
+	registered := postJSON(t, ts.URL+"/v1/auth/register/complete", map[string]interface{}{
 		"email":    "user1@example.com",
+		"code":     emailSender.code,
 		"password": "password123",
 		"name":     "User One",
 	}, http.StatusCreated)
@@ -70,7 +91,7 @@ func TestIntegrationAuthRBACAndCRUD(t *testing.T) {
 }
 
 func TestIntegrationAdminRoleIsRevalidatedFromDatabase(t *testing.T) {
-	ts, repo, _ := newIntegrationServer(t)
+	ts, repo, _, _ := newIntegrationServer(t)
 	defer ts.Close()
 
 	adminLogin := postJSON(t, ts.URL+"/v1/auth/login", map[string]interface{}{
@@ -90,6 +111,19 @@ func TestIntegrationAdminRoleIsRevalidatedFromDatabase(t *testing.T) {
 	}
 
 	getWithBearer(t, ts.URL+"/v1/users?limit=20&offset=0", adminToken, http.StatusForbidden)
+}
+
+func TestRegistrationStartDoesNotRevealExistingEmail(t *testing.T) {
+	ts, _, _, emailSender := newIntegrationServer(t)
+	defer ts.Close()
+
+	emailSender.code = ""
+	postJSON(t, ts.URL+"/v1/auth/register/start", map[string]interface{}{
+		"email": "admin@local.dev",
+	}, http.StatusAccepted)
+	if emailSender.code != "" {
+		t.Fatal("expected no registration code to be sent for existing email")
+	}
 }
 
 func postJSON(t *testing.T, url string, payload interface{}, expectedStatus int) map[string]interface{} {

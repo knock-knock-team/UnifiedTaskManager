@@ -58,7 +58,7 @@ async def ensure_environment(
     auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    require_team_access(auth, payload.team_id)
+    await require_team_access(auth, payload.team_id)
     environment = await service.ensure_environment(payload.team_id, payload.project_id, auth.user_id)
     audit("file_environment_ensured", auth.user_id, payload.team_id, payload.project_id)
     return environment
@@ -70,7 +70,7 @@ async def add_members(
     auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    require_team_access(auth, payload.team_id)
+    await require_team_access(auth, payload.team_id)
     members = await service.add_members(payload.team_id, payload.project_id, auth.user_id, payload.user_ids)
     audit("file_environment_members_added", auth.user_id, payload.team_id, payload.project_id, member_count=len(payload.user_ids))
     return {"members": members}
@@ -82,7 +82,7 @@ async def remove_members(
     auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    require_team_access(auth, payload.team_id)
+    await require_team_access(auth, payload.team_id)
     members = await service.remove_members(payload.team_id, payload.project_id, auth.user_id, payload.user_ids)
     audit("file_environment_members_removed", auth.user_id, payload.team_id, payload.project_id, member_count=len(payload.user_ids))
     return {"members": members}
@@ -94,7 +94,7 @@ async def create_folder(
     auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    require_team_access(auth, payload.team_id)
+    await require_team_access(auth, payload.team_id)
     await service.create_folder(payload.team_id, payload.project_id, auth.user_id, payload.path)
     audit("file_folder_created", auth.user_id, payload.team_id, payload.project_id, **path_meta(payload.path))
     return {"status": "ok"}
@@ -109,7 +109,7 @@ async def upload_file(
     auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    require_team_access(auth, team_id)
+    await require_team_access(auth, team_id)
     stored_path = await service.upload_file(team_id, project_id, auth.user_id, directory, file)
     audit(
         "file_uploaded",
@@ -128,7 +128,7 @@ async def delete_entry(
     auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    require_team_access(auth, payload.team_id)
+    await require_team_access(auth, payload.team_id)
     await service.delete_entry(payload.team_id, payload.project_id, auth.user_id, payload.path)
     audit("file_entry_deleted", auth.user_id, payload.team_id, payload.project_id, **path_meta(payload.path))
     return {"status": "ok"}
@@ -140,7 +140,7 @@ async def rename_entry(
     auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    require_team_access(auth, payload.team_id)
+    await require_team_access(auth, payload.team_id)
     await service.rename_entry(payload.team_id, payload.project_id, auth.user_id, payload.old_path, payload.new_path)
     audit(
         "file_entry_renamed",
@@ -162,7 +162,7 @@ async def download_file(
     auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    require_team_access(auth, team_id)
+    await require_team_access(auth, team_id)
     file_path = await service.get_file_for_download(team_id, project_id, auth.user_id, path)
     audit("file_downloaded", auth.user_id, team_id, project_id, **path_meta(path))
     return FileResponse(file_path, media_type="application/octet-stream", filename=file_path.name)
@@ -176,7 +176,7 @@ async def view_file(
     auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    require_team_access(auth, team_id)
+    await require_team_access(auth, team_id)
     file_path = await service.get_file_for_download(team_id, project_id, auth.user_id, path)
     media_type, _ = mimetypes.guess_type(str(file_path))
     audit("file_viewed", auth.user_id, team_id, project_id, media_type=(media_type or "")[:80], **path_meta(path))
@@ -191,6 +191,6 @@ async def list_entries(
     auth: AuthContext = Depends(get_auth_context),
     service: StorageService = Depends(get_storage_service),
 ):
-    require_team_access(auth, team_id)
+    await require_team_access(auth, team_id)
     items = await service.list_entries(team_id, project_id, auth.user_id, directory)
     return {"items": items}

@@ -14,7 +14,7 @@ import (
 	"unified-task-manager/services/task-service/internal/model"
 )
 
-const redisChannel = "vg:board:events"
+const redisChannel = "utm:board:events"
 
 type redisEnvelope struct {
 	NodeID string `json:"nodeId"`

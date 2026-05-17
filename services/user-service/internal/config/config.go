@@ -36,6 +36,13 @@ type Config struct {
 	BootstrapAdminEmail    string
 	BootstrapAdminPassword string
 	BootstrapAdminName     string
+
+	SMTPHost     string
+	SMTPPort     string
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string
+	SMTPFromName string
 }
 
 func FromEnv() Config {
@@ -65,6 +72,13 @@ func FromEnv() Config {
 		BootstrapAdminEmail:    getenv("BOOTSTRAP_ADMIN_EMAIL", ""),
 		BootstrapAdminPassword: getenv("BOOTSTRAP_ADMIN_PASSWORD", ""),
 		BootstrapAdminName:     getenv("BOOTSTRAP_ADMIN_NAME", "System Admin"),
+
+		SMTPHost:     getenv("SMTP_HOST", ""),
+		SMTPPort:     getenv("SMTP_PORT", "587"),
+		SMTPUsername: getenv("SMTP_USERNAME", ""),
+		SMTPPassword: getenv("SMTP_PASSWORD", ""),
+		SMTPFrom:     getenv("SMTP_FROM", getenv("SMTP_USERNAME", "")),
+		SMTPFromName: getenv("SMTP_FROM_NAME", "UnifiedTaskManager"),
 	}
 }
 

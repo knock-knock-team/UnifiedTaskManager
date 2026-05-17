@@ -339,6 +339,12 @@ func isPublicRoute(path string) bool {
 	switch {
 	case path == "/v1/auth/register":
 		return true
+	case path == "/v1/auth/register/start":
+		return true
+	case path == "/v1/auth/register/verify":
+		return true
+	case path == "/v1/auth/register/complete":
+		return true
 	case path == "/v1/auth/login":
 		return true
 	case path == "/v1/auth/refresh":

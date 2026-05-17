@@ -32,6 +32,12 @@ type RefreshTokenStore interface {
 	ListTeamIDsByUserID(ctx context.Context, userID string) ([]string, error)
 }
 
+type RegistrationVerificationStore interface {
+	UpsertRegistrationVerification(ctx context.Context, item model.RegistrationVerification) error
+	FindRegistrationVerification(ctx context.Context, email string) (model.RegistrationVerification, error)
+	DeleteRegistrationVerification(ctx context.Context, email string) error
+}
+
 type TeamStore interface {
 	CreateTeam(ctx context.Context, team model.Team) (model.Team, error)
 	FindTeamByID(ctx context.Context, teamID string) (model.Team, error)
@@ -71,6 +77,7 @@ type TeamStore interface {
 type UserStore interface {
 	UserRepository
 	RefreshTokenStore
+	RegistrationVerificationStore
 	TeamStore
 }
 
@@ -85,33 +92,35 @@ type inviteRecord struct {
 }
 
 type InMemoryUserRepository struct {
-	mu            sync.RWMutex
-	byID          map[string]model.User
-	emailTo       map[string]string
-	refreshTokens map[string]refreshTokenRecord
-	userTeams     map[string]map[string]struct{}
-	teams         map[string]model.Team
-	teamRoles     map[string]map[string]model.TeamRole
-	teamMembers   map[string]map[string]model.TeamMember
-	teamInvites   map[string]inviteRecord
-	projects      map[string]model.Project
-	projectRoles  map[string]map[string]model.ProjectRole
-	projectMember map[string]map[string]model.ProjectMember
+	mu                        sync.RWMutex
+	byID                      map[string]model.User
+	emailTo                   map[string]string
+	refreshTokens             map[string]refreshTokenRecord
+	registrationVerifications map[string]model.RegistrationVerification
+	userTeams                 map[string]map[string]struct{}
+	teams                     map[string]model.Team
+	teamRoles                 map[string]map[string]model.TeamRole
+	teamMembers               map[string]map[string]model.TeamMember
+	teamInvites               map[string]inviteRecord
+	projects                  map[string]model.Project
+	projectRoles              map[string]map[string]model.ProjectRole
+	projectMember             map[string]map[string]model.ProjectMember
 }
 
 func NewInMemoryUserRepository() *InMemoryUserRepository {
 	return &InMemoryUserRepository{
-		byID:          make(map[string]model.User),
-		emailTo:       make(map[string]string),
-		refreshTokens: make(map[string]refreshTokenRecord),
-		userTeams:     make(map[string]map[string]struct{}),
-		teams:         make(map[string]model.Team),
-		teamRoles:     make(map[string]map[string]model.TeamRole),
-		teamMembers:   make(map[string]map[string]model.TeamMember),
-		teamInvites:   make(map[string]inviteRecord),
-		projects:      make(map[string]model.Project),
-		projectRoles:  make(map[string]map[string]model.ProjectRole),
-		projectMember: make(map[string]map[string]model.ProjectMember),
+		byID:                      make(map[string]model.User),
+		emailTo:                   make(map[string]string),
+		refreshTokens:             make(map[string]refreshTokenRecord),
+		registrationVerifications: make(map[string]model.RegistrationVerification),
+		userTeams:                 make(map[string]map[string]struct{}),
+		teams:                     make(map[string]model.Team),
+		teamRoles:                 make(map[string]map[string]model.TeamRole),
+		teamMembers:               make(map[string]map[string]model.TeamMember),
+		teamInvites:               make(map[string]inviteRecord),
+		projects:                  make(map[string]model.Project),
+		projectRoles:              make(map[string]map[string]model.ProjectRole),
+		projectMember:             make(map[string]map[string]model.ProjectMember),
 	}
 }
 
@@ -256,6 +265,38 @@ func (r *InMemoryUserRepository) RotateRefreshToken(_ context.Context, oldTokenH
 	}
 	delete(r.refreshTokens, oldTokenHash)
 	r.refreshTokens[newTokenHash] = refreshTokenRecord{userID: userID, expiresAt: expiresAt.UTC()}
+	return nil
+}
+
+func (r *InMemoryUserRepository) UpsertRegistrationVerification(_ context.Context, item model.RegistrationVerification) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	email := strings.ToLower(strings.TrimSpace(item.Email))
+	if email == "" {
+		return ErrNotFound
+	}
+	item.Email = email
+	r.registrationVerifications[email] = item
+	return nil
+}
+
+func (r *InMemoryUserRepository) FindRegistrationVerification(_ context.Context, email string) (model.RegistrationVerification, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	item, ok := r.registrationVerifications[strings.ToLower(strings.TrimSpace(email))]
+	if !ok {
+		return model.RegistrationVerification{}, ErrNotFound
+	}
+	return item, nil
+}
+
+func (r *InMemoryUserRepository) DeleteRegistrationVerification(_ context.Context, email string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.registrationVerifications, strings.ToLower(strings.TrimSpace(email)))
 	return nil
 }
 

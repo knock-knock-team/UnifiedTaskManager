@@ -9,11 +9,12 @@ import { CabinetSettingsPage } from './pages/CabinetSettingsPage';
 import { HomePage } from './pages/HomePage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
+import { PrivacyPage, TermsPage } from './pages/LegalPages';
 import { ProtectedRoute } from './routes/ProtectedRoute';
 import { AgentChatDrawer } from './ui/AgentChatDrawer';
 import { Toast } from './ui/Toast';
 
-const USER_AGREEMENT_STORAGE_KEY = 'vgUserAgreementAccepted.v1';
+const USER_AGREEMENT_STORAGE_KEY = 'utmUserAgreementAccepted.v1';
 
 function App() {
   const navigate = useNavigate();
@@ -138,14 +139,50 @@ function App() {
     }
   }
 
-  async function onRegister(event, name, email, password) {
+  async function onStartRegistration(event, email) {
+    event?.preventDefault?.();
+    try {
+      const data = await request(apiBase, '', '/v1/auth/register/start', {
+        method: 'POST',
+        body: {
+          email
+        }
+      });
+      showNotification('Код подтверждения отправлен на почту', 'success');
+      return data;
+    } catch (error) {
+      showNotification(error.message || 'Не удалось отправить код', 'error');
+      throw error;
+    }
+  }
+
+  async function onVerifyRegistrationCode(event, email, code) {
     event.preventDefault();
     try {
-      const data = await request(apiBase, '', '/v1/auth/register', {
+      const data = await request(apiBase, '', '/v1/auth/register/verify', {
+        method: 'POST',
+        body: {
+          email,
+          code
+        }
+      });
+      showNotification('Код подтверждён', 'success');
+      return data;
+    } catch (error) {
+      showNotification(error.message || 'Неверный код подтверждения', 'error');
+      throw error;
+    }
+  }
+
+  async function onCompleteRegistration(event, name, email, code, password) {
+    event.preventDefault();
+    try {
+      const data = await request(apiBase, '', '/v1/auth/register/complete', {
         method: 'POST',
         body: {
           name,
           email,
+          code,
           password
         }
       });
@@ -153,12 +190,17 @@ function App() {
       if (!tokens) {
         throw new Error('Регистрация прошла, но токены не получены. Проверьте ответ API.');
       }
+      storage.taskTeamId = '';
+      storage.taskTeamName = '';
+      storage.taskProjectId = '';
+      storage.taskProjectName = '';
       setProfile(data.user || null);
       setLoggedIn(tokens);
       showNotification('Регистрация успешна', 'success');
       navigate('/cabinet', { replace: true });
     } catch (error) {
       showNotification(error.message || 'Ошибка при регистрации', 'error');
+      throw error;
     }
   }
 
@@ -244,7 +286,11 @@ function App() {
         <div key={location.pathname} className="route-transition">
           <Routes>
             <Route path="/" element={<HomePage isAuthorized={isAuthorized} />} />
-            <Route path="/register" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <RegisterPage onRegister={onRegister} />} />
+            <Route path="/terms" element={<TermsPage />} />
+            <Route path="/privacy" element={<PrivacyPage />} />
+            <Route path="/register" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <RegisterPage onStartRegistration={onStartRegistration} onVerifyRegistrationCode={onVerifyRegistrationCode} onCompleteRegistration={onCompleteRegistration} />} />
+            <Route path="/register/code" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <RegisterPage onStartRegistration={onStartRegistration} onVerifyRegistrationCode={onVerifyRegistrationCode} onCompleteRegistration={onCompleteRegistration} />} />
+            <Route path="/register/password" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <RegisterPage onStartRegistration={onStartRegistration} onVerifyRegistrationCode={onVerifyRegistrationCode} onCompleteRegistration={onCompleteRegistration} />} />
             <Route path="/login" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <LoginPage onLogin={onLogin} />} />
             <Route path="/tasks" element={<ProtectedRoute isAuthorized={isAuthorized}><TasksPage accessToken={accessToken} apiBase={apiBase} taskApiBase={storage.taskApiBase} profile={profile} showNotification={showNotification} onUpdateAccessToken={onUpdateAccessToken} /></ProtectedRoute>} />
             <Route path="/chats" element={<ProtectedRoute isAuthorized={isAuthorized}><ChatPage accessToken={accessToken} apiBase={apiBase} profile={profile} showNotification={showNotification} onUpdateAccessToken={onUpdateAccessToken} /></ProtectedRoute>} />
@@ -285,8 +331,9 @@ function App() {
           <div className="user-agreement-banner__content">
             <p className="section-label">ПОЛЬЗОВАТЕЛЬСКОЕ СОГЛАШЕНИЕ</p>
             <p>
-              Продолжая пользоваться UnifiedTaskManager, вы соглашаетесь с пользовательским соглашением,
-              политикой конфиденциальности и обработкой данных, необходимых для работы сервиса.
+              Продолжая пользоваться UnifiedTaskManager, вы соглашаетесь с{' '}
+              <Link to="/terms">пользовательским соглашением</Link>,{' '}
+              <Link to="/privacy">политикой конфиденциальности</Link> и обработкой данных, необходимых для работы сервиса.
             </p>
           </div>
           <button type="button" onClick={acceptUserAgreement}>Понятно, принимаю</button>

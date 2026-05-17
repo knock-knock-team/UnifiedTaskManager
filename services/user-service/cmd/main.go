@@ -115,7 +115,15 @@ func main() {
 	}
 
 	tokenManager := service.NewTokenManager(cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
-	userService := service.NewUserService(repo, tokenManager)
+	emailSender := service.SMTPEmailSender{
+		Host:     cfg.SMTPHost,
+		Port:     cfg.SMTPPort,
+		Username: cfg.SMTPUsername,
+		Password: cfg.SMTPPassword,
+		From:     cfg.SMTPFrom,
+		FromName: cfg.SMTPFromName,
+	}
+	userService := service.NewUserServiceWithEmailSender(repo, tokenManager, emailSender)
 
 	if cfg.BootstrapAdminEmail != "" && cfg.BootstrapAdminPassword != "" {
 		admin, err := userService.BootstrapAdmin(cfg.BootstrapAdminEmail, cfg.BootstrapAdminPassword, cfg.BootstrapAdminName)
