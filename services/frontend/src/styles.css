@@ -4787,6 +4787,7 @@ html[data-theme="light"] .mindmap-viewport::-webkit-scrollbar-thumb {
   background: rgba(10, 14, 22, 0.92);
   padding: 6px 8px;
   cursor: pointer;
+  overflow: hidden;
 }
 
 .mindmap-node-task.done {
@@ -4800,11 +4801,30 @@ html[data-theme="light"] .mindmap-viewport::-webkit-scrollbar-thumb {
 }
 
 .mindmap-node-task-title {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  display: block;
+  width: 100%;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 3px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(126, 167, 255, 0.62) rgba(255, 255, 255, 0.04);
+}
+
+.mindmap-node-task-title::-webkit-scrollbar {
+  width: 5px;
+}
+
+.mindmap-node-task-title::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 999px;
+}
+
+.mindmap-node-task-title::-webkit-scrollbar-thumb {
+  background: rgba(126, 167, 255, 0.58);
+  border-radius: 999px;
 }
 
 .mindmap-viewport.draw-mode .mindmap-node {
