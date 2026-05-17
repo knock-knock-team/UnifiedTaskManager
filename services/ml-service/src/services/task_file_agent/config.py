@@ -15,6 +15,10 @@ class TaskFileAgentSettings(BaseSettings):
         default="http://localhost:8080",
         validation_alias=AliasChoices("API_GATEWAY_BASE_URL", "TASK_FILE_AGENT_GATEWAY_BASE_URL"),
     )
+    user_service_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("USER_SERVICE_BASE_URL", "TASK_FILE_AGENT_USER_SERVICE_BASE_URL"),
+    )
     task_service_base_url: str | None = Field(
         default=None,
         validation_alias=AliasChoices("TASK_SERVICE_BASE_URL", "TASK_FILE_AGENT_TASK_SERVICE_BASE_URL"),
@@ -54,6 +58,10 @@ class TaskFileAgentSettings(BaseSettings):
     @property
     def resolved_file_service_base_url(self) -> str:
         return (self.file_service_base_url or self.gateway_base_url).rstrip("/")
+
+    @property
+    def resolved_user_service_base_url(self) -> str:
+        return (self.user_service_base_url or self.gateway_base_url).rstrip("/")
 
 
 @lru_cache(maxsize=1)

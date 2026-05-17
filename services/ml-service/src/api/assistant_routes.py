@@ -7,6 +7,7 @@ import os
 import time
 from dataclasses import dataclass
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
@@ -75,8 +76,51 @@ def get_auth_context(
     )
 
 
-def require_team_access(auth: AuthContext, team_id: str) -> None:
-    if auth.enforce_team_ids and (team_id or "").strip() not in auth.team_ids:
+async def require_project_access(
+    auth: AuthContext,
+    authorization: str | None,
+    team_id: str,
+    project_id: str,
+    user_service_base_url: str,
+) -> None:
+    normalized_team_id = (team_id or "").strip()
+    normalized_project_id = (project_id or "").strip()
+    if not normalized_team_id or not normalized_project_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="teamId and projectId are required")
+    if not auth.enforce_team_ids or normalized_team_id in auth.team_ids:
+        return
+
+    # JWT teamIds can lag behind freshly created teams. Use the same live permission
+    # check as task-service before rejecting the agent request.
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(
+                f"{user_service_base_url.rstrip('/')}/v1/permissions/check",
+                headers={
+                    "Authorization": authorization or "",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "teamId": normalized_team_id,
+                    "projectId": normalized_project_id,
+                    "permission": "tasks.read",
+                },
+            )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Permission service unavailable") from None
+
+    if response.status_code == status.HTTP_401_UNAUTHORIZED:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+    if response.status_code >= 500:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Permission service unavailable")
+    if response.status_code != status.HTTP_200_OK:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+    try:
+        allowed = bool(response.json().get("allowed"))
+    except ValueError:
+        allowed = False
+    if not allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
@@ -106,7 +150,13 @@ async def run_task_file_agent(
     x_user_id: str | None = Header(default=None),
 ):
     auth = get_auth_context(authorization, x_gateway_user_id, x_user_id)
-    require_team_access(auth, payload.team_id)
+    await require_project_access(
+        auth,
+        authorization,
+        payload.team_id,
+        payload.project_id,
+        agent.settings.resolved_user_service_base_url,
+    )
     return await agent.handle(
         payload,
         authorization=authorization,
@@ -123,7 +173,13 @@ async def stream_task_file_agent(
     x_user_id: str | None = Header(default=None),
 ):
     auth = get_auth_context(authorization, x_gateway_user_id, x_user_id)
-    require_team_access(auth, payload.team_id)
+    await require_project_access(
+        auth,
+        authorization,
+        payload.team_id,
+        payload.project_id,
+        agent.settings.resolved_user_service_base_url,
+    )
 
     async def event_stream():
         async for item in agent.stream(

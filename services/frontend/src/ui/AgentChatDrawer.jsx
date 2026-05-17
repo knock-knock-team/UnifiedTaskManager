@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { storage } from '../lib/api';
+import { refreshAccessToken, storage } from '../lib/api';
 
 
 function buildRequestId() {
@@ -159,11 +159,11 @@ export function AgentChatDrawer({ apiBase, accessToken, isAuthorized, showNotifi
     setStreamStatus('Думаю...');
 
     try {
-      const response = await fetch(`${apiBase}/api/tasks/assistant/stream`, {
+      const makeAgentRequest = (token) => fetch(`${apiBase}/api/tasks/assistant/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`
+          Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({
           request_id: buildRequestId(),
@@ -174,9 +174,17 @@ export function AgentChatDrawer({ apiBase, accessToken, isAuthorized, showNotifi
         })
       });
 
+      let response = await makeAgentRequest(accessToken);
+
       if (response.status === 401) {
-        onUpdateAccessToken?.(null);
-        throw new Error('Сессия истекла. Пожалуйста, авторизируйтесь снова.');
+        try {
+          const newAccessToken = await refreshAccessToken(apiBase);
+          onUpdateAccessToken?.(newAccessToken);
+          response = await makeAgentRequest(newAccessToken);
+        } catch {
+          onUpdateAccessToken?.(null);
+          throw new Error('Сессия истекла. Пожалуйста, авторизируйтесь снова.');
+        }
       }
 
       if (!response.ok || !response.body) {

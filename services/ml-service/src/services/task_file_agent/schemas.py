@@ -161,6 +161,8 @@ class CreateTaskInput(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     description: str | None = None
     status: str | None = None
+    column_id: str | None = None
+    column_title: str | None = None
     priority: str | None = None
     due_at: str | None = None
     assignee_user_id: str | None = None

@@ -191,6 +191,7 @@ services:
       TASK_SERVICE_AGENT_COMMANDS_QUEUE: task-service.agent-commands
       FILE_SERVICE_AGENT_COMMANDS_QUEUE: file-service.agent-commands
       TASK_FILE_AGENT_GATEWAY_BASE_URL: http://api-gateway:8081
+      TASK_FILE_AGENT_USER_SERVICE_BASE_URL: http://user-service:8082
       CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
       JWT_SECRET: ${JWT_SECRET}
       LOGGER_LEVEL: ${LOGGER_LEVEL:-INFO}

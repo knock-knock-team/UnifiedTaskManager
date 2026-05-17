@@ -66,8 +66,8 @@ func FromEnv() Config {
 		AdminOpsToken:                getenv("ADMIN_OPS_TOKEN", ""),
 		CORSAllowOrigin:              getenv("CORS_ALLOW_ORIGIN", "*"),
 		JWTSecret:                    getenv("JWT_SECRET", ""),
-		AccessTokenTTL:               time.Duration(getenvInt("ACCESS_TOKEN_MINUTES", 15)) * time.Minute,
-		RefreshTokenTTL:              time.Duration(getenvInt("REFRESH_TOKEN_HOURS", 168)) * time.Hour,
+		AccessTokenTTL:               time.Duration(getenvInt("ACCESS_TOKEN_MINUTES", 60)) * time.Minute,
+		RefreshTokenTTL:              time.Duration(getenvInt("REFRESH_TOKEN_HOURS", 504)) * time.Hour,
 
 		BootstrapAdminEmail:    getenv("BOOTSTRAP_ADMIN_EMAIL", ""),
 		BootstrapAdminPassword: getenv("BOOTSTRAP_ADMIN_PASSWORD", ""),

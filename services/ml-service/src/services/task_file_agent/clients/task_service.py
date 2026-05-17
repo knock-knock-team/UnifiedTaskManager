@@ -85,11 +85,20 @@ class TaskServiceClient:
         title: str,
         description: str | None = None,
         status: str | None = None,
+        column_id: str | None = None,
+        column_title: str | None = None,
         priority: str | None = None,
         due_at: str | None = None,
         assignee_user_id: str | None = None,
         assignee_name: str | None = None,
     ) -> TaskRecord:
+        resolved_status = (column_id or status or "").strip() or None
+        if not resolved_status and column_title:
+            normalized_title = column_title.strip().casefold()
+            columns = await self.list_columns(context)
+            matched = next((column for column in columns if column.title.strip().casefold() == normalized_title), None)
+            if matched is not None:
+                resolved_status = matched.id
         response = await self.transport.request(
             service_name="task_service",
             queue_name=self.queue_name,
@@ -99,7 +108,7 @@ class TaskServiceClient:
                 {
                     "title": title,
                     "description": description,
-                    "status": status,
+                    "status": resolved_status,
                     "priority": priority,
                     "dueAt": due_at,
                     "assigneeUserId": assignee_user_id,

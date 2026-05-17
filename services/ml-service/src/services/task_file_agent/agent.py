@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -61,6 +62,20 @@ class TaskFileAgentRuntime:
         bound_llm = self.llm.bind_tools(self.tools)
         tool_cache: dict[str, tuple[AgentToolTrace, ToolMessage]] = {}
         try:
+            direct_request = self._extract_column_task_request(user_message)
+            if direct_request is not None:
+                yield {"type": "status", "text": "Создаю задачи в нужной колонке...", "tool_name": "", "payload": {}}
+                result = await self._execute_column_task_request(direct_request, tool_cache)
+                for trace in result.tool_calls:
+                    yield {
+                        "type": "tool_end",
+                        "text": "",
+                        "tool_name": trace.tool_name,
+                        "payload": trace.tool_output or {},
+                    }
+                yield {"type": "final", "text": result.answer, "tool_name": "", "payload": {}}
+                return
+
             yield {"type": "status", "text": "Думаю над запросом...", "tool_name": "", "payload": {}}
             for _ in range(iterations):
                 streamed_any_text = False
@@ -136,6 +151,10 @@ class TaskFileAgentRuntime:
         bound_llm = self.llm.bind_tools(self.tools)
         tool_cache: dict[str, tuple[AgentToolTrace, ToolMessage]] = {}
 
+        direct_request = self._extract_column_task_request(user_message)
+        if direct_request is not None:
+            return await self._execute_column_task_request(direct_request, tool_cache)
+
         for _ in range(iterations):
             response = await bound_llm.ainvoke(messages)
             tool_calls = self._extract_tool_calls(response)
@@ -157,6 +176,72 @@ class TaskFileAgentRuntime:
         return AgentRunResult(
             answer=self._build_iteration_limit_answer(traces, completed=False),
             succeeded=False,
+            tool_calls=traces,
+        )
+
+    async def _execute_column_task_request(
+        self,
+        request: dict[str, Any],
+        tool_cache: dict[str, tuple[AgentToolTrace, ToolMessage]],
+    ) -> AgentRunResult:
+        traces: list[AgentToolTrace] = []
+        column_title = str(request["column_title"]).strip()
+        task_titles = [str(item).strip() for item in request["task_titles"] if str(item).strip()]
+
+        list_trace, _ = await self._execute_tool_call(
+            {"id": "direct-list-task-columns", "name": "list_task_columns", "args": {}},
+            tool_cache,
+        )
+        traces.append(list_trace)
+        if list_trace.error is not None or (list_trace.tool_output or {}).get("success") is False:
+            return AgentRunResult(answer="Не удалось получить список колонок.", succeeded=False, tool_calls=traces)
+
+        columns = ((list_trace.tool_output or {}).get("data") or {}).get("columns") or []
+        matched = next(
+            (
+                column
+                for column in columns
+                if str(column.get("title") or "").strip().casefold() == column_title.casefold()
+            ),
+            None,
+        )
+        if matched is None:
+            create_column_trace, _ = await self._execute_tool_call(
+                {"id": "direct-create-task-column", "name": "create_task_column", "args": {"title": column_title}},
+                tool_cache,
+            )
+            traces.append(create_column_trace)
+            if create_column_trace.error is not None or (create_column_trace.tool_output or {}).get("success") is False:
+                return AgentRunResult(answer=f"Не удалось создать колонку «{column_title}».", succeeded=False, tool_calls=traces)
+            matched = ((create_column_trace.tool_output or {}).get("data") or {}).get("column") or {}
+
+        column_id = str(matched.get("id") or "").strip()
+        if not column_id:
+            return AgentRunResult(answer=f"Не удалось определить id колонки «{column_title}».", succeeded=False, tool_calls=traces)
+
+        created_count = 0
+        for index, title in enumerate(task_titles, start=1):
+            task_trace, _ = await self._execute_tool_call(
+                {
+                    "id": f"direct-create-task-{index}",
+                    "name": "create_task",
+                    "args": {"title": title, "column_id": column_id},
+                },
+                tool_cache,
+            )
+            traces.append(task_trace)
+            if task_trace.error is None and (task_trace.tool_output or {}).get("success") is not False:
+                created_count += 1
+
+        if created_count != len(task_titles):
+            return AgentRunResult(
+                answer=f"Создал {created_count} из {len(task_titles)} задач в колонке «{column_title}».",
+                succeeded=False,
+                tool_calls=traces,
+            )
+        return AgentRunResult(
+            answer=f"Готово: создал {created_count} задачи в колонке «{column_title}».",
+            succeeded=True,
             tool_calls=traces,
         )
 
@@ -231,6 +316,33 @@ class TaskFileAgentRuntime:
                 except Exception:
                     return {}
         return {}
+
+    @staticmethod
+    def _extract_column_task_request(user_message: str) -> dict[str, Any] | None:
+        text = str(user_message or "").strip()
+        if not text:
+            return None
+        lower = text.lower()
+        if not any(marker in lower for marker in ("создай задач", "создать задач", "create task")):
+            return None
+        if not any(marker in lower for marker in ("колонк", "column")):
+            return None
+
+        column_match = re.search(r'колонк[ауеи]\s+["«](.+?)["»]', text, flags=re.IGNORECASE)
+        if column_match is None:
+            column_match = re.search(r'["«](.+?)["»]\s*(?:колонк|column)', text, flags=re.IGNORECASE)
+        if column_match is None:
+            return None
+
+        task_titles = [
+            match.group(1).strip()
+            for match in re.finditer(r"(?m)^\s*\d+[\).]\s+(.+?)\s*$", text)
+            if match.group(1).strip()
+        ]
+        if not task_titles:
+            return None
+
+        return {"column_title": column_match.group(1).strip(), "task_titles": task_titles}
 
     @staticmethod
     def _extract_tool_calls(response: Any) -> list[dict[str, Any]]:

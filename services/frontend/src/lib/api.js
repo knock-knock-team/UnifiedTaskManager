@@ -83,7 +83,7 @@ export const storage = {
 
 let refreshPromise = null;
 
-async function refreshAccessToken(apiBase, refreshToken) {
+export async function refreshAccessToken(apiBase, refreshToken = storage.refreshToken) {
   if (!refreshToken) {
     throw new Error('invalid token');
   }
