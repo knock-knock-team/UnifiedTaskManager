@@ -191,16 +191,17 @@ func (a *app) findDueTasks(ctx context.Context) ([]task, error) {
 WITH due_tasks AS (
 	SELECT t.id, t.title, t.description, t.status, t.priority, t.due_at,
 		t.completed_at,
-		COALESCE(NULLIF(t.assignee_user_id, ''), NULLIF(t.assignees_json::jsonb->0->>'userId', ''), '') AS assignee_user_id,
-		COALESCE(NULLIF(t.assignee_name, ''), NULLIF(t.assignees_json::jsonb->0->>'displayName', ''), '') AS assignee_name,
+		COALESCE(NULLIF(assignee.item->>'userId', ''), NULLIF(t.assignee_user_id, ''), '') AS assignee_user_id,
+		COALESCE(NULLIF(assignee.item->>'displayName', ''), NULLIF(t.assignee_name, ''), '') AS assignee_name,
 		t.team_id, t.project_id
 	FROM tasks t
 	LEFT JOIN deadline_notification_settings s ON s.project_id = t.project_id
+	LEFT JOIN LATERAL jsonb_array_elements(COALESCE(NULLIF(t.assignees_json, '')::jsonb, '[]'::jsonb)) AS assignee(item) ON TRUE
 	WHERE t.deleted_at IS NULL
 		AND COALESCE(s.auto_enabled, TRUE)
 		AND t.due_at IS NOT NULL
 		AND t.completed_at IS NULL
-		AND t.due_at > NOW()
+		AND t.due_at > NOW() - ($2 * INTERVAL '1 second')
 		AND t.due_at <= NOW() + (COALESCE(s.notify_before_minutes, $1) * INTERVAL '1 minute')
 )
 SELECT id, title, description, status, priority, due_at,
@@ -217,7 +218,7 @@ WHERE assignee_user_id <> ''
 	)
 ORDER BY due_at ASC
 LIMIT 100`
-	rows, err := a.db.Query(ctx, q, int(a.cfg.DeadlineLookAhead.Minutes()))
+	rows, err := a.db.Query(ctx, q, int(a.cfg.DeadlineLookAhead.Minutes()), int(a.cfg.ScanInterval.Seconds()))
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +312,7 @@ func (a *app) taskNotification(w http.ResponseWriter, r *http.Request, token str
 		return
 	}
 	taskID := strings.TrimSpace(parts[0])
-	item, err := a.getTask(r.Context(), taskID)
+	items, err := a.getTasksForNotification(r.Context(), taskID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"message": "task not found"})
@@ -320,7 +321,11 @@ func (a *app) taskNotification(w http.ResponseWriter, r *http.Request, token str
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "internal server error"})
 		return
 	}
-	allowed, err := a.checkPermission(r.Context(), token, item.TeamID, item.ProjectID, "tasks.write")
+	if len(items) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "task not found"})
+		return
+	}
+	allowed, err := a.checkPermission(r.Context(), token, items[0].TeamID, items[0].ProjectID, "tasks.write")
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"message": "dependency unavailable"})
 		return
@@ -329,15 +334,25 @@ func (a *app) taskNotification(w http.ResponseWriter, r *http.Request, token str
 		writeJSON(w, http.StatusForbidden, map[string]string{"message": "forbidden"})
 		return
 	}
-	if err := a.sendDeadlineNotification(r.Context(), item, "manual"); err != nil {
+	sent := 0
+	var lastErr error
+	for _, item := range items {
+		if err := a.sendDeadlineNotification(r.Context(), item, "manual"); err != nil {
+			lastErr = err
+			log.Printf("manual deadline notification task=%s assignee=%s failed: %v", item.ID, item.AssigneeUserID, err)
+			continue
+		}
+		sent++
+	}
+	if sent == 0 && lastErr != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, errBadRequest) {
+		if errors.Is(lastErr, errBadRequest) {
 			status = http.StatusBadRequest
 		}
-		writeJSON(w, status, map[string]string{"message": err.Error()})
+		writeJSON(w, status, map[string]string{"message": lastErr.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "sent"})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "sent", "sent": sent})
 }
 
 var errBadRequest = errors.New("bad request")
@@ -496,29 +511,28 @@ ON CONFLICT DO NOTHING`, item.ID, item.AssigneeUserID, item.DueAt, mode)
 	return err
 }
 
-func (a *app) getTask(ctx context.Context, taskID string) (task, error) {
+func (a *app) getTasksForNotification(ctx context.Context, taskID string) ([]task, error) {
 	const q = `
 SELECT id, title, description, status, priority, due_at, completed_at,
-	COALESCE(NULLIF(assignee_user_id, ''), NULLIF(assignees_json::jsonb->0->>'userId', ''), '') AS assignee_user_id,
-	COALESCE(NULLIF(assignee_name, ''), NULLIF(assignees_json::jsonb->0->>'displayName', ''), '') AS assignee_name,
+	COALESCE(NULLIF(assignee.item->>'userId', ''), NULLIF(assignee_user_id, ''), '') AS assignee_user_id,
+	COALESCE(NULLIF(assignee.item->>'displayName', ''), NULLIF(assignee_name, ''), '') AS assignee_name,
 	team_id, project_id
 FROM tasks
+LEFT JOIN LATERAL jsonb_array_elements(COALESCE(NULLIF(assignees_json, '')::jsonb, '[]'::jsonb)) AS assignee(item) ON TRUE
 WHERE id = $1 AND deleted_at IS NULL`
-	var item task
-	err := a.db.QueryRow(ctx, q, strings.TrimSpace(taskID)).Scan(
-		&item.ID,
-		&item.Title,
-		&item.Description,
-		&item.Status,
-		&item.Priority,
-		&item.DueAt,
-		&item.CompletedAt,
-		&item.AssigneeUserID,
-		&item.AssigneeName,
-		&item.TeamID,
-		&item.ProjectID,
-	)
-	return item, err
+	rows, err := a.db.Query(ctx, q, strings.TrimSpace(taskID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items, err := scanTasks(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, pgx.ErrNoRows
+	}
+	return items, nil
 }
 
 func (a *app) getUser(ctx context.Context, userID string) (user, error) {
