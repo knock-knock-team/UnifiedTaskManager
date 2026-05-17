@@ -86,6 +86,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [taskComments, setTaskComments] = useState([]);
   const [projectActivity, setProjectActivity] = useState([]);
   const [taskHistory, setTaskHistory] = useState([]);
+  const [taskHistoryTotal, setTaskHistoryTotal] = useState(0);
   const [commentDraft, setCommentDraft] = useState('');
   const [isLoadingComments, setIsLoadingComments] = useState(false);
   const [isLoadingActivity, setIsLoadingActivity] = useState(false);
@@ -135,6 +136,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const editorDirtyRef = useRef(false);
   const confirmResolverRef = useRef(null);
   const [calendarCursor, setCalendarCursor] = useState(() => new Date());
+  const TASK_HISTORY_PAGE_SIZE = 25;
 
   const formatNotificationError = useCallback((error, fallbackMessage) => {
     const message = String(error?.message || '').trim();
@@ -647,6 +649,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     });
     setEditorTaskSuggestion(null);
     setTaskComments([]);
+    setTaskHistory([]);
+    setTaskHistoryTotal(0);
     setCommentDraft('');
     setIsLoadingComments(false);
     setIsSavingComment(false);
@@ -817,6 +821,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const loadTaskHistory = useCallback(async (taskId, options = {}) => {
     if (!accessToken || !taskId || !selectedTeamId) return;
     const silent = Boolean(options.silent);
+    const append = Boolean(options.append);
+    const offset = Number(options.offset || 0);
     if (!silent) {
       setIsLoadingTaskHistory(true);
     }
@@ -824,11 +830,13 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       const data = await request(
         taskApiBase,
         accessToken,
-        `/v1/tasks/${encodeURIComponent(taskId)}/history?limit=40`,
+        `/v1/tasks/${encodeURIComponent(taskId)}/history?limit=${TASK_HISTORY_PAGE_SIZE}&offset=${offset}`,
         { auth: true, headers: { 'X-Team-Id': selectedTeamId } },
         onUpdateAccessToken
       );
-      setTaskHistory(Array.isArray(data.items) ? data.items : []);
+      const items = Array.isArray(data.items) ? data.items : [];
+      setTaskHistory((prev) => (append ? [...prev, ...items] : items));
+      setTaskHistoryTotal(Number(data.total ?? items.length));
     } catch (error) {
       showNotification(error.message || 'Не удалось загрузить историю задачи', 'error');
     } finally {
@@ -836,7 +844,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         setIsLoadingTaskHistory(false);
       }
     }
-  }, [accessToken, onUpdateAccessToken, selectedTeamId, showNotification, taskApiBase]);
+  }, [TASK_HISTORY_PAGE_SIZE, accessToken, onUpdateAccessToken, selectedTeamId, showNotification, taskApiBase]);
 
   const resyncBoard = useCallback(() => {
     if (!selectedTeamId || !selectedProjectId) return;
@@ -1713,6 +1721,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (!editorTask || !selectedTeamId || !selectedProjectId) {
       return;
     }
+    const taskId = editorTask.id;
     const body = commentDraft.trim();
     if (!body) {
       showNotification('Введите сообщение', 'error');
@@ -1720,15 +1729,15 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
     setIsSavingComment(true);
     try {
-      await request(taskApiBase, accessToken, `/v1/tasks/${editorTask.id}/comments`, {
+      await request(taskApiBase, accessToken, `/v1/tasks/${taskId}/comments`, {
         method: 'POST',
         auth: true,
         headers: { 'X-Team-Id': selectedTeamId },
         body: { body, authorName: (profile?.name || profile?.email || '').trim() }
       }, onUpdateAccessToken);
       setCommentDraft('');
-      await loadTaskComments(editorTask.id);
-      await loadTaskHistory(editorTask.id, { silent: true });
+      await loadTaskComments(taskId);
+      await loadTaskHistory(taskId, { silent: true });
       await loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
       showNotification('Сообщение отправлено', 'success');
     } catch (error) {
@@ -1763,6 +1772,14 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     } catch (error) {
       showNotification(error.message || 'Не удалось удалить сообщение', 'error');
     }
+  };
+
+  const handleLoadMoreTaskHistory = () => {
+    if (!editorTask || isLoadingTaskHistory) return;
+    void loadTaskHistory(editorTask.id, {
+      append: true,
+      offset: taskHistory.length
+    });
   };
 
   const handleDeleteTask = async (taskId) => {
@@ -2774,8 +2791,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                             <strong
                               className="task-card-title"
                               lang="ru"
-                              onDoubleClick={() => handleInlineEditStart(task)}
-                              title="Двойной клик для редактирования"
+                              onClick={() => handleEditTask(task)}
+                              title="Открыть карточку задачи"
                               aria-label="Название задачи"
                             >
                               {task.title}
@@ -3144,11 +3161,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         )}
 
         {editorTask && (
-          <div className="task-modal-backdrop" onClick={(event) => {
-            if (event.target === event.currentTarget) {
-              closeTaskEditor();
-            }
-          }} role="presentation">
+          <div className="task-modal-backdrop" role="presentation">
             <div className="task-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Редактирование задачи">
               <div className="task-modal-header">
                 <div>
@@ -3331,7 +3344,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                       <p className="section-label">ИСТОРИЯ</p>
                       <h4>Изменения задачи</h4>
                     </div>
-                    <span className="task-comments-count">{taskHistory.length}</span>
+                    <span className="task-comments-count">{taskHistoryTotal || taskHistory.length}</span>
                   </div>
                   <div className="activity-feed task-history-list">
                     {isLoadingTaskHistory ? (
@@ -3352,6 +3365,16 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                       );
                     })}
                   </div>
+                  {taskHistory.length < taskHistoryTotal && (
+                    <button
+                      type="button"
+                      className="ghost compact-btn task-history-more"
+                      onClick={handleLoadMoreTaskHistory}
+                      disabled={isLoadingTaskHistory}
+                    >
+                      {isLoadingTaskHistory ? 'Загружаем...' : 'Показать ещё'}
+                    </button>
+                  )}
                 </section>
               </div>
             </div>

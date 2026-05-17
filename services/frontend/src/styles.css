@@ -2439,6 +2439,10 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
   gap: 14px;
   min-height: 0;
+  overflow: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(126, 168, 255, 0.72) rgba(255, 255, 255, 0.06);
 }
 
 .task-modal-form,
@@ -2454,13 +2458,15 @@ button.danger:hover:not(:disabled) {
 
 .task-comments-panel {
   grid-template-rows: auto minmax(0, 1fr) auto;
-  height: min(430px, 52vh);
+  min-height: min(610px, calc(92vh - 150px));
+  height: auto;
 }
 
 .task-history-panel {
   grid-column: 1 / -1;
-  grid-template-rows: auto minmax(0, 1fr);
-  height: min(320px, 36vh);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 320px;
+  height: auto;
 }
 
 .activity-feed {
@@ -2548,6 +2554,10 @@ html[data-theme='light'] .activity-feed::-webkit-scrollbar-thumb {
   max-height: 260px;
 }
 
+.task-history-more {
+  justify-self: start;
+}
+
 .task-comments-header {
   display: flex;
   justify-content: space-between;
@@ -2568,22 +2578,24 @@ html[data-theme='light'] .activity-feed::-webkit-scrollbar-thumb {
 }
 
 .task-comments-list {
-  min-height: 180px;
-  max-height: 260px;
+  min-height: 320px;
+  max-height: none;
   overflow: auto;
   display: grid;
   align-content: start;
   gap: 10px;
-  padding-right: 4px;
+  padding-right: 6px;
 }
 
 .task-comment-item {
   border: 1px solid var(--line-soft);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.02);
-  padding: 10px 12px;
+  padding: 8px 10px;
   display: grid;
-  gap: 8px;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
 }
 
 .task-comment-meta {
@@ -2616,7 +2628,9 @@ html[data-theme='light'] .activity-feed::-webkit-scrollbar-thumb {
 }
 
 .task-comment-form textarea {
-  min-height: 96px;
+  min-height: 72px;
+  max-height: 140px;
+  resize: vertical;
 }
 
 .empty-state {
@@ -4739,6 +4753,7 @@ html[data-theme="light"] .mindmap-viewport::-webkit-scrollbar-thumb {
 .mindmap-node-task-title {
   display: -webkit-box;
   -webkit-line-clamp: 3;
+  line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
