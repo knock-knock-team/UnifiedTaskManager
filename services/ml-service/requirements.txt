@@ -1,0 +1,10 @@
+langchain-gigachat==0.5.0
+langchain
+rich==15.0.0
+fastapi==0.136.1
+aio-pika==9.5.5
+httpx
+pydantic-settings
+python-json-logger==4.1.0
+uvicorn
+prometheus-client==0.21.1

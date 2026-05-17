@@ -1,0 +1,29 @@
+# VCS and metadata
+.git
+.github
+
+# Environment
+.env
+.env.*
+
+# Editor/IDE
+.vscode
+.idea
+
+# Logs and temp
+*.log
+tmp/
+
+# Build artifacts
+**/bin/
+**/dist/
+**/*.out
+**/coverage.out
+
+# Dependency directories
+**/node_modules/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+.venv/

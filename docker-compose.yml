@@ -1,0 +1,264 @@
+name: unified-task-manager
+
+services:
+  api-gateway:
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/api-gateway:${IMAGE_TAG:-latest}
+    pull_policy: always
+    env_file: .env.production
+    environment:
+      GATEWAY_FILE_SERVICE_URL: http://file-service:8088
+      GATEWAY_ML_SERVICE_URL: http://ml-service:8087
+      GATEWAY_NOTIFICATION_SERVICE_URL: http://notification-service:8089
+    depends_on:
+      - user-service
+      - task-service
+      - chat-service
+      - sfu-service
+      - file-service
+      - ml-service
+      - notification-service
+    networks:
+      - backend
+
+  frontend:
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/frontend:${IMAGE_TAG:-latest}
+    pull_policy: always
+    env_file: .env.production
+    depends_on:
+      - api-gateway
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+
+  sfu-service:
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/sfu-service:${IMAGE_TAG:-latest}
+    pull_policy: always
+    env_file: .env.production
+    networks:
+      backend:
+        aliases:
+          - call-service
+
+  user-service:
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/user-service:${IMAGE_TAG:-latest}
+    pull_policy: always
+    env_file: .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+    networks:
+      - backend
+  
+  ml-service:
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/ml-service:${IMAGE_TAG:-latest}
+    pull_policy: always
+    env_file: .env.production
+    environment:
+      ML_SERVICE_RABBITMQ_ENABLED: "true"
+      ML_SERVICE_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      TASK_SERVICE_AGENT_COMMANDS_QUEUE: task-service.agent-commands
+      FILE_SERVICE_AGENT_COMMANDS_QUEUE: file-service.agent-commands
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+    networks:
+      - backend
+
+  task-service:
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/task-service:${IMAGE_TAG:-latest}
+    pull_policy: always
+    env_file: .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+    networks:
+      - backend
+
+  file-service:
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/file-service:${IMAGE_TAG:-latest}
+    pull_policy: always
+    restart: on-failure
+    env_file: .env.production
+    environment:
+      FILE_SERVICE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      FILE_SERVICE_STORAGE_ROOT: /var/lib/unified-task-manager-file-service/storage
+      FILE_SERVICE_RABBITMQ_ENABLED: "true"
+      FILE_SERVICE_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      FILE_SERVICE_USER_SERVICE_URL: http://user-service:8082
+      FILE_SERVICE_USER_EXISTS_QUEUE: user-service.user-exists
+      FILE_SERVICE_DELETED_FILE_QUEUE: task-service.file-deleted
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+    volumes:
+      - unified_task_manager_file_service_storage:/var/lib/unified-task-manager-file-service/storage
+    networks:
+      - backend
+
+  chat-service:
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/chat-service:${IMAGE_TAG:-latest}
+    pull_policy: always
+    restart: on-failure
+    env_file: .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+    networks:
+      - backend
+
+  notification-service:
+    image: ${CI_REGISTRY_IMAGE:-registry.gitlab.com/knock-knock-team/unified-task-manager}/notification-service:${IMAGE_TAG:-latest}
+    pull_policy: always
+    env_file: .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+    networks:
+      - backend
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - unified_task_manager_postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    networks:
+      - backend
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - unified_task_manager_nginx_logs:/var/log/nginx
+    depends_on:
+      frontend:
+        condition: service_healthy
+      api-gateway:
+        condition: service_started
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - unified_task_manager_prometheus_data:/prometheus
+    depends_on:
+      - api-gateway
+      - user-service
+      - task-service
+      - chat-service
+      - sfu-service
+      - file-service
+      - ml-service
+      - notification-service
+    networks:
+      - backend
+
+  loki:
+    image: grafana/loki:3.2.1
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./deploy/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - unified_task_manager_loki_data:/loki
+    networks:
+      - backend
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail-config.yml -config.expand-env=true
+    environment:
+      ENVIRONMENT: ${ENV:-production}
+    volumes:
+      - ./deploy/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - unified_task_manager_nginx_logs:/var/log/nginx:ro
+    depends_on:
+      - loki
+    networks:
+      - backend
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - unified_task_manager_grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - backend
+
+volumes:
+  unified_task_manager_postgres_data:
+  unified_task_manager_nginx_logs:
+  unified_task_manager_file_service_storage:
+  unified_task_manager_prometheus_data:
+  unified_task_manager_loki_data:
+  unified_task_manager_grafana_data:
+
+networks:
+  backend:
+    driver: bridge

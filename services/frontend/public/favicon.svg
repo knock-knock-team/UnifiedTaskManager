@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img" aria-label="UnifiedTaskManager">
+  <rect width="400" height="400" fill="#ffffff"/>
+  <path fill="#1b1b19" d="M46 79h64v43H90v153h20v43H46v-43h18V122H46z"/>
+  <path fill="#1b1b19" d="M169 79h61v50h-61zM169 146h61v172h-61z"/>
+  <path fill="#1b1b19" d="M289 79h64v43h-18v153h18v43h-64v-43h20V122h-20z"/>
+</svg>

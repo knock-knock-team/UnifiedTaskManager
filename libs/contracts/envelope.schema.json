@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RabbitMQ JSON message envelope",
+  "type": "object",
+  "properties": {
+    "content_type": {
+      "type": "string",
+      "const": "application/json"
+    },
+    "message_type": {
+      "type": "string"
+    },
+    "correlation_id": {
+      "type": "string"
+    },
+    "reply_to": {
+      "type": "string"
+    },
+    "sent_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {}
+  },
+  "required": [
+    "payload"
+  ],
+  "additionalProperties": false
+}

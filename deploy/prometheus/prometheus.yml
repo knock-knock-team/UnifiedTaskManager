@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["prometheus:9090"]
+
+  - job_name: app-services
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - api-gateway:8081
+          - user-service:8082
+          - task-service:8083
+          - chat-service:8084
+          - sfu-service:8086
+          - ml-service:8087
+          - file-service:8088
+          - notification-service:8089

@@ -1,0 +1,12 @@
+name: unified-task-manager
+
+services:
+  ml-service:
+    image: ml-service
+    env_file: .env
+    build:
+      context: ../..
+      dockerfile: services/ml-service/Dockerfile
+    container_name: unified-task-manager-ml-service
+    ports:
+      - "8087:8087"

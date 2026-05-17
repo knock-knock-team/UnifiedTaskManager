@@ -1,0 +1,26 @@
+# VCS and IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# Docs and tests
+**/*_test.go
+coverage.out
+
+# Local env/config
+.env
+.env.*
+
+# Build outputs
+bin
+dist
+*.log
+
+# Compose/workflow artifacts
+docker-compose*.yml
+.github
+
+# Other services in monorepo
+../../docs
+../../services/*

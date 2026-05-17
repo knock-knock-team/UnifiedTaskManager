@@ -1,0 +1,346 @@
+name: unified-task-manager
+
+services:
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+    pull_policy: never
+    container_name: unified-task-manager-api-gateway
+    env_file:
+      - ./.env
+    environment:
+      GATEWAY_HTTP_ADDR: :8081
+      GATEWAY_USER_SERVICE_URL: http://user-service:8082
+      GATEWAY_TASK_SERVICE_URL: http://task-service:8083
+      GATEWAY_CHAT_SERVICE_URL: http://chat-service:8084
+      GATEWAY_CALL_SERVICE_URL: http://sfu-service:8086
+      GATEWAY_FILE_SERVICE_URL: http://file-service:8088
+      GATEWAY_ML_SERVICE_URL: http://ml-service:8087
+      GATEWAY_NOTIFICATION_SERVICE_URL: http://notification-service:8089
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
+    ports:
+      - "8081:8081"
+    depends_on:
+      - user-service
+      - task-service
+      - chat-service
+      - sfu-service
+      - file-service
+      - ml-service
+      - notification-service
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: unified-task-manager-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - unified_task_manager_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: unified-task-manager-rabbitmq
+    volumes:
+      - ./rabbitmq.conf:/etc/rabbitmq/conf.d/10-local.conf:ro
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "${RABBITMQ_PORT}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: unified-task-manager-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  user-service:
+    build:
+      context: .
+      dockerfile: services/user-service/Dockerfile
+    pull_policy: never
+    container_name: unified-task-manager-user-service
+    env_file:
+      - ./.env
+    environment:
+      HTTP_ADDR: ${HTTP_ADDR}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672//
+      USE_IN_MEMORY: ${USE_IN_MEMORY}
+      AUTO_MIGRATE: ${AUTO_MIGRATE}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
+    expose:
+      - "8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  task-service:
+    build:
+      context: .
+      dockerfile: services/task-service/Dockerfile
+    pull_policy: never
+    container_name: unified-task-manager-task-service
+    env_file:
+      - ./.env
+    environment:
+      TASK_SERVICE_HTTP_ADDR: :8083
+      TASK_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      TASK_USE_IN_MEMORY: ${USE_IN_MEMORY}
+      TASK_AUTO_MIGRATE: ${AUTO_MIGRATE}
+      TASK_RABBITMQ_ENABLED: "true"
+      TASK_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      TASK_RABBITMQ_EXCHANGE: task.events
+      TASK_USER_SERVICE_URL: http://user-service:8082
+      TASK_BOARD_REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
+    expose:
+      - "8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+    pull_policy: never
+    container_name: unified-task-manager-notification-service
+    env_file:
+      - ./.env
+    environment:
+      NOTIFICATION_SERVICE_HTTP_ADDR: :8089
+      NOTIFICATION_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      NOTIFICATION_USER_SERVICE_URL: http://user-service:8082
+      NOTIFICATION_AUTO_MIGRATE: ${AUTO_MIGRATE}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
+      SMTP_HOST: ${SMTP_HOST:-smtp.yandex.ru}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_FROM: ${SMTP_FROM}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-UnifiedTaskManager}
+      NOTIFICATION_DEADLINE_LOOKAHEAD_MINUTES: ${NOTIFICATION_DEADLINE_LOOKAHEAD_MINUTES:-1440}
+      NOTIFICATION_DEFAULT_URGENT_BEFORE_MINUTES: ${NOTIFICATION_DEFAULT_URGENT_BEFORE_MINUTES:-120}
+      NOTIFICATION_SCAN_INTERVAL_SECONDS: ${NOTIFICATION_SCAN_INTERVAL_SECONDS:-300}
+      NOTIFICATION_AUTO_SEND_ENABLED: ${NOTIFICATION_AUTO_SEND_ENABLED:-true}
+      PUBLIC_FRONTEND_URL: ${PUBLIC_FRONTEND_URL:-http://localhost:8080}
+    expose:
+      - "8089"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+
+  frontend:
+    build:
+      context: .
+      dockerfile: services/frontend/Dockerfile
+      args:
+        VITE_TURN_URL: "turn:127.0.0.1:3478"
+        VITE_TURN_USERNAME: "turnuser"
+        VITE_TURN_CREDENTIAL: "turnpass"
+    pull_policy: never
+    container_name: unified-task-manager-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - api-gateway
+
+  file-service:
+    build:
+      context: .
+      dockerfile: services/file-service/Dockerfile
+    pull_policy: never
+    container_name: unified-task-manager-file-service
+    restart: on-failure
+    env_file:
+      - ./.env
+    environment:
+      FILE_SERVICE_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      FILE_SERVICE_STORAGE_ROOT: /var/lib/unified-task-manager-file-service/storage
+      FILE_SERVICE_RABBITMQ_ENABLED: "true"
+      FILE_SERVICE_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      FILE_SERVICE_USER_SERVICE_URL: http://user-service:8082
+      FILE_SERVICE_USER_EXISTS_QUEUE: user-service.user-exists
+      FILE_SERVICE_DELETED_FILE_QUEUE: task-service.file-deleted
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
+    ports:
+      - "8088:8088"
+    volumes:
+      - unified_task_manager_file_service_storage:/var/lib/unified-task-manager-file-service/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  coturn:
+    image: instrumentisto/coturn:latest
+    container_name: unified-task-manager-coturn
+    command: ["turnserver", "-n", "--lt-cred-mech", "--user", "turnuser:turnpass", "--realm", "unified-task-manager.local", "--no-cli", "--no-multicast-peers"]
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+    restart: unless-stopped
+  
+  chat-service:
+    build:
+      context: .
+      dockerfile: services/chat-service/Dockerfile
+    pull_policy: never
+    container_name: unified-task-manager-chat-service
+    restart: on-failure
+    env_file:
+      - ./.env
+    environment:
+      CHAT_SERVICE_HTTP_ADDR: 0.0.0.0:8084
+      CHAT_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      CHAT_RABBITMQ_EXCHANGE: chat.events
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN}
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  sfu-service:
+    build:
+      context: .
+      dockerfile: services/sfu-service/Dockerfile
+    pull_policy: never
+    container_name: unified-task-manager-sfu-service
+    env_file:
+      - ./.env
+    environment:
+      SFU_ADDR: :8086
+      JWT_SECRET: ${JWT_SECRET}
+      TURN_URL: "turn:coturn:3478"
+      VITE_TURN_URL: "turn:coturn:3478"
+      VITE_TURN_USERNAME: "turnuser"
+      VITE_TURN_CREDENTIAL: "turnpass"
+    ports:
+      - "8086:8086"
+    restart: unless-stopped
+  
+  ml-service:
+    image: ml-service
+    env_file: ./.env
+    build:
+      context: .
+      dockerfile: services/ml-service/Dockerfile
+    container_name: unified-task-manager-ml-service
+    environment:
+      ML_SERVICE_RABBITMQ_ENABLED: "true"
+      ML_SERVICE_RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      TASK_SERVICE_AGENT_COMMANDS_QUEUE: task-service.agent-commands
+      FILE_SERVICE_AGENT_COMMANDS_QUEUE: file-service.agent-commands
+    ports:
+      - "8087:8087"
+    restart: unless-stopped
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: unified-task-manager-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - unified_task_manager_prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api-gateway
+      - user-service
+      - task-service
+      - chat-service
+      - sfu-service
+      - file-service
+      - ml-service
+      - notification-service
+
+  loki:
+    image: grafana/loki:3.2.1
+    container_name: unified-task-manager-loki
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./deploy/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - unified_task_manager_loki_data:/loki
+    ports:
+      - "3100:3100"
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    container_name: unified-task-manager-promtail
+    command: -config.file=/etc/promtail/promtail-config.yml -config.expand-env=true
+    environment:
+      ENVIRONMENT: ${ENV:-local}
+    volumes:
+      - ./deploy/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: unified-task-manager-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - unified_task_manager_grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+
+volumes:
+  unified_task_manager_postgres_data:
+  unified_task_manager_file_service_storage:
+  unified_task_manager_prometheus_data:
+  unified_task_manager_loki_data:
+  unified_task_manager_grafana_data:
