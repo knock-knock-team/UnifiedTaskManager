@@ -675,22 +675,32 @@ h2 {
 
 .password-input-shell input {
   width: 100%;
-  padding-right: 92px;
+  padding-right: 48px;
 }
 
 .password-toggle-btn {
   position: absolute;
   top: 50%;
   right: 6px;
+  width: 36px;
+  min-width: 36px !important;
   min-height: 36px;
-  padding: 0 10px;
+  padding: 0 !important;
   transform: translateY(-50%);
   border-radius: var(--radius-sm);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--accent-strong);
+  display: inline-grid;
+  place-items: center;
+}
+
+.password-toggle-btn svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .password-toggle-btn:hover:not(:disabled) {
@@ -1785,6 +1795,22 @@ html[data-theme="light"] .task-card:hover:not(.dragging) {
   white-space: nowrap !important;
 }
 
+.task-urgent-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 3px 7px;
+  border: 1px solid rgba(245, 158, 11, 0.46);
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.14);
+  color: #f8d99b !important;
+  font-size: 9px !important;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap !important;
+}
+
 .task-card-title-row {
   display: flex;
   align-items: flex-start;
@@ -1920,10 +1946,18 @@ html[data-theme="light"] .task-card:hover:not(.dragging) {
   color: #ffc9c9 !important;
 }
 
+.task-card-badges,
 .task-card-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  align-items: flex-start;
+}
+
+.task-card-badges {
+  margin-top: -2px;
 }
 
 .task-chip-tag {
@@ -2272,6 +2306,7 @@ button.danger:hover:not(:disabled) {
   border-radius: 18px;
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 14px;
   padding: 16px;
 }
@@ -2419,11 +2454,13 @@ button.danger:hover:not(:disabled) {
 
 .task-comments-panel {
   grid-template-rows: auto minmax(0, 1fr) auto;
+  height: min(430px, 52vh);
 }
 
 .task-history-panel {
   grid-column: 1 / -1;
   grid-template-rows: auto minmax(0, 1fr);
+  height: min(320px, 36vh);
 }
 
 .activity-feed {
@@ -2531,9 +2568,11 @@ html[data-theme='light'] .activity-feed::-webkit-scrollbar-thumb {
 }
 
 .task-comments-list {
-  min-height: 0;
+  min-height: 180px;
+  max-height: 260px;
   overflow: auto;
   display: grid;
+  align-content: start;
   gap: 10px;
   padding-right: 4px;
 }

@@ -99,10 +99,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [isSavingTask, setIsSavingTask] = useState(false);
   const [pendingNotificationTaskId, setPendingNotificationTaskId] = useState('');
   const [deadlineSettings, setDeadlineSettings] = useState({
+    autoEnabled: true,
     notifyBeforeMinutes: 1440,
     urgentBeforeMinutes: 120
   });
   const [deadlineSettingsForm, setDeadlineSettingsForm] = useState({
+    autoEnabled: true,
     notifyBeforeMinutes: '1440',
     urgentBeforeMinutes: '120'
   });
@@ -798,7 +800,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       const data = await request(
         taskApiBase,
         accessToken,
-        `/v1/task-activity?projectId=${encodeURIComponent(projectId)}&limit=40`,
+        `/v1/task-activity?projectId=${encodeURIComponent(projectId)}&limit=25`,
         { auth: true, headers: { 'X-Team-Id': teamId } },
         onUpdateAccessToken
       );
@@ -968,18 +970,21 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         onUpdateAccessToken
       );
       const next = {
+        autoEnabled: data.autoEnabled !== false,
         notifyBeforeMinutes: Number(data.notifyBeforeMinutes || 1440),
         urgentBeforeMinutes: Number(data.urgentBeforeMinutes || 120)
       };
       setDeadlineSettings(next);
       setDeadlineSettingsForm({
+        autoEnabled: next.autoEnabled,
         notifyBeforeMinutes: String(next.notifyBeforeMinutes),
         urgentBeforeMinutes: String(next.urgentBeforeMinutes)
       });
     } catch {
-      const fallback = { notifyBeforeMinutes: 1440, urgentBeforeMinutes: 120 };
+      const fallback = { autoEnabled: true, notifyBeforeMinutes: 1440, urgentBeforeMinutes: 120 };
       setDeadlineSettings(fallback);
       setDeadlineSettingsForm({
+        autoEnabled: fallback.autoEnabled,
         notifyBeforeMinutes: String(fallback.notifyBeforeMinutes),
         urgentBeforeMinutes: String(fallback.urgentBeforeMinutes)
       });
@@ -1063,7 +1068,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (!editorTask) return;
     void loadTaskComments(editorTask.id);
     void loadTaskHistory(editorTask.id);
-  }, [editorTask, loadTaskComments, loadTaskHistory]);
+  }, [editorTask?.id, loadTaskComments, loadTaskHistory]);
 
   useEffect(() => {
     if (!selectedMemberStatsUserId) return;
@@ -1850,16 +1855,22 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
           method: 'PATCH',
           auth: true,
           headers: { 'X-Team-Id': selectedTeamId },
-          body: { notifyBeforeMinutes, urgentBeforeMinutes }
+          body: {
+            autoEnabled: Boolean(deadlineSettingsForm.autoEnabled),
+            notifyBeforeMinutes,
+            urgentBeforeMinutes
+          }
         },
         onUpdateAccessToken
       );
       const next = {
+        autoEnabled: data.autoEnabled !== false,
         notifyBeforeMinutes: Number(data.notifyBeforeMinutes || notifyBeforeMinutes),
         urgentBeforeMinutes: Number(data.urgentBeforeMinutes || urgentBeforeMinutes)
       };
       setDeadlineSettings(next);
       setDeadlineSettingsForm({
+        autoEnabled: next.autoEnabled,
         notifyBeforeMinutes: String(next.notifyBeforeMinutes),
         urgentBeforeMinutes: String(next.urgentBeforeMinutes)
       });
@@ -2221,6 +2232,16 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
             <details className="sidebar-card">
               <summary>Авто-дедлайны</summary>
               <form className="sidebar-form" onSubmit={handleDeadlineSettingsSubmit}>
+                <label className="permission-option compact-permission-option">
+                  <input
+                    className="compact-checkbox"
+                    type="checkbox"
+                    checked={deadlineSettingsForm.autoEnabled}
+                    onChange={(event) => setDeadlineSettingsForm((prev) => ({ ...prev, autoEnabled: event.target.checked }))}
+                    disabled={!canManageDeadlineSettings || isLoadingDeadlineSettings}
+                  />
+                  <span>Автоматические уведомления включены</span>
+                </label>
                 <label>
                   <span>Уведомить за, минут</span>
                   <input
@@ -2383,7 +2404,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
           </details>
 
           <details className="sidebar-card">
-            <summary>Активность проекта</summary>
+            <summary>Недавняя активность проекта</summary>
             <div className="activity-feed">
               {isLoadingActivity ? (
                 <p className="muted-caption">Загружаем активность...</p>
@@ -2762,12 +2783,6 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                           )}
                         </div>
                         <div className="task-card-top-meta">
-                          <span
-                            className={`task-priority-badge priority-${String(task.priority || 'medium').toLowerCase()}`}
-                          >
-                            {priorityLabel(task.priority)}
-                          </span>
-                          {isTaskOverdue(task) && <span className="task-overdue-badge">Просрочено</span>}
                           <div className="task-card-menu-shell">
                             <button
                               type="button"
@@ -2816,8 +2831,17 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                           </div>
                         </div>
                       </div>
+                      <div className="task-card-badges" aria-label="Метки задачи">
+                        <span
+                          className={`task-priority-badge priority-${String(task.priority || 'medium').toLowerCase()}`}
+                        >
+                          {priorityLabel(task.priority)}
+                        </span>
+                        {isTaskOverdue(task) && <span className="task-overdue-badge">Просрочено</span>}
+                        {isUrgentDeadline(task) && !isTaskOverdue(task) && <span className="task-urgent-badge">Горящий срок</span>}
+                      </div>
                       {Array.isArray(task.tags) && task.tags.length > 0 && (
-                        <div className="task-card-tags" aria-label="Теги">
+                        <div className="task-card-tags" aria-label="Пользовательские теги">
                           {task.tags.map((tag, idx) => (
                             <span key={`${task.id}-${tag}-${idx}`} className="task-chip task-chip-tag">{tag}</span>
                           ))}
@@ -2998,8 +3022,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         </div>
 
         {selectedMemberStats && (
-          <div className="task-modal-backdrop" onMouseDown={() => setSelectedMemberStatsUserId('')} role="presentation">
-            <div className="task-modal member-stats-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Статистика участника">
+          <div className="task-modal-backdrop" onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setSelectedMemberStatsUserId('');
+            }
+          }} role="presentation">
+            <div className="task-modal member-stats-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Статистика участника">
               <div className="task-modal-header member-stats-header">
                 <div className="member-stats-header-main">
                   <div className="member-stats-avatar" aria-hidden="true">
@@ -3116,8 +3144,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         )}
 
         {editorTask && (
-          <div className="task-modal-backdrop" onMouseDown={closeTaskEditor} role="presentation">
-            <div className="task-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Редактирование задачи">
+          <div className="task-modal-backdrop" onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              closeTaskEditor();
+            }
+          }} role="presentation">
+            <div className="task-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Редактирование задачи">
               <div className="task-modal-header">
                 <div>
                   <p className="section-label">РЕДАКТИРОВАНИЕ ЗАДАЧИ</p>
