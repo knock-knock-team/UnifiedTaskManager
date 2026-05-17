@@ -8,6 +8,7 @@ import {
   applyBoardEventToTasks,
   applyBoardSnapshot,
   patchTask,
+  patchColumn,
   reorderColumns,
   reorderTasksInColumn
 } from '../lib/tasksBoardApi';
@@ -86,23 +87,30 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const [taskComments, setTaskComments] = useState([]);
   const [projectActivity, setProjectActivity] = useState([]);
   const [taskHistory, setTaskHistory] = useState([]);
+  const [taskHistoryTotal, setTaskHistoryTotal] = useState(0);
   const [commentDraft, setCommentDraft] = useState('');
+  const [taskAssigneeSearch, setTaskAssigneeSearch] = useState('');
+  const [editorAssigneeSearch, setEditorAssigneeSearch] = useState('');
   const [isLoadingComments, setIsLoadingComments] = useState(false);
   const [isLoadingActivity, setIsLoadingActivity] = useState(false);
   const [isLoadingTaskHistory, setIsLoadingTaskHistory] = useState(false);
   const [isSavingComment, setIsSavingComment] = useState(false);
   const [inlineEditTaskId, setInlineEditTaskId] = useState('');
   const [inlineEditTitle, setInlineEditTitle] = useState('');
+  const [inlineEditColumnId, setInlineEditColumnId] = useState('');
+  const [inlineEditColumnTitle, setInlineEditColumnTitle] = useState('');
   const [isLoadingTeams, setIsLoadingTeams] = useState(false);
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
   const [isSavingTask, setIsSavingTask] = useState(false);
   const [pendingNotificationTaskId, setPendingNotificationTaskId] = useState('');
   const [deadlineSettings, setDeadlineSettings] = useState({
+    autoEnabled: true,
     notifyBeforeMinutes: 1440,
     urgentBeforeMinutes: 120
   });
   const [deadlineSettingsForm, setDeadlineSettingsForm] = useState({
+    autoEnabled: true,
     notifyBeforeMinutes: '1440',
     urgentBeforeMinutes: '120'
   });
@@ -132,7 +140,11 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const editorBaseTaskRef = useRef(null);
   const editorDirtyRef = useRef(false);
   const confirmResolverRef = useRef(null);
+  const projectScopeRef = useRef({ teamId: selectedTeamId, projectId: selectedProjectId });
+  const taskCommentsListRef = useRef(null);
+  const loadedCommentsTaskIdRef = useRef('');
   const [calendarCursor, setCalendarCursor] = useState(() => new Date());
+  const TASK_HISTORY_PAGE_SIZE = 25;
 
   const formatNotificationError = useCallback((error, fallbackMessage) => {
     const message = String(error?.message || '').trim();
@@ -261,6 +273,27 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     assigneeOptions.forEach((item) => map.set(item.userId, item.displayName));
     return map;
   }, [assigneeOptions]);
+
+  const filterAssignees = useCallback((query) => {
+    const normalized = String(query || '').trim().toLowerCase();
+    if (!normalized) {
+      return assigneeOptions;
+    }
+    return assigneeOptions.filter((item) => {
+      const label = String(item.displayName || '').toLowerCase();
+      const userId = String(item.userId || '').toLowerCase();
+      return label.includes(normalized) || userId.includes(normalized);
+    });
+  }, [assigneeOptions]);
+
+  const taskAssigneeSearchResults = useMemo(
+    () => filterAssignees(taskAssigneeSearch),
+    [filterAssignees, taskAssigneeSearch]
+  );
+  const editorAssigneeSearchResults = useMemo(
+    () => filterAssignees(editorAssigneeSearch),
+    [editorAssigneeSearch, filterAssignees]
+  );
 
   const userLabelById = useMemo(() => {
     const map = new Map();
@@ -645,7 +678,11 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     });
     setEditorTaskSuggestion(null);
     setTaskComments([]);
+    setTaskHistory([]);
+    setTaskHistoryTotal(0);
     setCommentDraft('');
+    setEditorAssigneeSearch('');
+    loadedCommentsTaskIdRef.current = '';
     setIsLoadingComments(false);
     setIsSavingComment(false);
   }, []);
@@ -798,7 +835,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       const data = await request(
         taskApiBase,
         accessToken,
-        `/v1/task-activity?projectId=${encodeURIComponent(projectId)}&limit=40`,
+        `/v1/task-activity?projectId=${encodeURIComponent(projectId)}&limit=25`,
         { auth: true, headers: { 'X-Team-Id': teamId } },
         onUpdateAccessToken
       );
@@ -815,6 +852,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const loadTaskHistory = useCallback(async (taskId, options = {}) => {
     if (!accessToken || !taskId || !selectedTeamId) return;
     const silent = Boolean(options.silent);
+    const append = Boolean(options.append);
+    const offset = Number(options.offset || 0);
     if (!silent) {
       setIsLoadingTaskHistory(true);
     }
@@ -822,11 +861,13 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
       const data = await request(
         taskApiBase,
         accessToken,
-        `/v1/tasks/${encodeURIComponent(taskId)}/history?limit=40`,
+        `/v1/tasks/${encodeURIComponent(taskId)}/history?limit=${TASK_HISTORY_PAGE_SIZE}&offset=${offset}`,
         { auth: true, headers: { 'X-Team-Id': selectedTeamId } },
         onUpdateAccessToken
       );
-      setTaskHistory(Array.isArray(data.items) ? data.items : []);
+      const items = Array.isArray(data.items) ? data.items : [];
+      setTaskHistory((prev) => (append ? [...prev, ...items] : items));
+      setTaskHistoryTotal(Number(data.total ?? items.length));
     } catch (error) {
       showNotification(error.message || 'Не удалось загрузить историю задачи', 'error');
     } finally {
@@ -834,7 +875,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         setIsLoadingTaskHistory(false);
       }
     }
-  }, [accessToken, onUpdateAccessToken, selectedTeamId, showNotification, taskApiBase]);
+  }, [TASK_HISTORY_PAGE_SIZE, accessToken, onUpdateAccessToken, selectedTeamId, showNotification, taskApiBase]);
 
   const resyncBoard = useCallback(() => {
     if (!selectedTeamId || !selectedProjectId) return;
@@ -968,18 +1009,21 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         onUpdateAccessToken
       );
       const next = {
+        autoEnabled: data.autoEnabled !== false,
         notifyBeforeMinutes: Number(data.notifyBeforeMinutes || 1440),
         urgentBeforeMinutes: Number(data.urgentBeforeMinutes || 120)
       };
       setDeadlineSettings(next);
       setDeadlineSettingsForm({
+        autoEnabled: next.autoEnabled,
         notifyBeforeMinutes: String(next.notifyBeforeMinutes),
         urgentBeforeMinutes: String(next.urgentBeforeMinutes)
       });
     } catch {
-      const fallback = { notifyBeforeMinutes: 1440, urgentBeforeMinutes: 120 };
+      const fallback = { autoEnabled: true, notifyBeforeMinutes: 1440, urgentBeforeMinutes: 120 };
       setDeadlineSettings(fallback);
       setDeadlineSettingsForm({
+        autoEnabled: fallback.autoEnabled,
         notifyBeforeMinutes: String(fallback.notifyBeforeMinutes),
         urgentBeforeMinutes: String(fallback.urgentBeforeMinutes)
       });
@@ -1016,16 +1060,23 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   useEffect(() => {
     storage.taskProjectId = selectedProjectId;
     storage.taskProjectName = activeProject?.name || activeProject?.title || '';
+    const previousScope = projectScopeRef.current;
+    const scopeChanged = previousScope.teamId !== selectedTeamId || previousScope.projectId !== selectedProjectId;
+    projectScopeRef.current = { teamId: selectedTeamId, projectId: selectedProjectId };
     if (!selectedProjectId || !selectedTeamId) {
       storage.taskProjectName = '';
       setTasks([]);
       setColumns([]);
       setProjectActivity([]);
       setTaskHistory([]);
-      closeTaskEditor();
+      if (scopeChanged) {
+        closeTaskEditor();
+      }
       return;
     }
-    closeTaskEditor();
+    if (scopeChanged) {
+      closeTaskEditor();
+    }
     void loadColumns(selectedTeamId, selectedProjectId);
     void loadTasks(selectedTeamId, selectedProjectId);
     void loadProjectActivity(selectedTeamId, selectedProjectId);
@@ -1061,9 +1112,17 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
 
   useEffect(() => {
     if (!editorTask) return;
+    if (loadedCommentsTaskIdRef.current === editorTask.id) return;
+    loadedCommentsTaskIdRef.current = editorTask.id;
     void loadTaskComments(editorTask.id);
     void loadTaskHistory(editorTask.id);
-  }, [editorTask, loadTaskComments, loadTaskHistory]);
+  }, [editorTask?.id, loadTaskComments, loadTaskHistory]);
+
+  useEffect(() => {
+    const list = taskCommentsListRef.current;
+    if (!list) return;
+    list.scrollTop = list.scrollHeight;
+  }, [editorTask?.id, taskComments.length]);
 
   useEffect(() => {
     if (!selectedMemberStatsUserId) return;
@@ -1415,6 +1474,51 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
   };
 
+  const handleColumnRenameStart = (column) => {
+    if (!column || column.locked) return;
+    setInlineEditColumnId(column.id);
+    setInlineEditColumnTitle(column.title || '');
+  };
+
+  const handleColumnRenameCancel = () => {
+    setInlineEditColumnId('');
+    setInlineEditColumnTitle('');
+  };
+
+  const handleColumnRenameSave = async (columnId) => {
+    const title = inlineEditColumnTitle.trim();
+    const column = columns.find((item) => item.id === columnId);
+    if (!column || column.locked || !selectedTeamId || !selectedProjectId) {
+      handleColumnRenameCancel();
+      return;
+    }
+    if (!title || title === column.title) {
+      handleColumnRenameCancel();
+      return;
+    }
+    try {
+      const result = await patchColumn({
+        taskApiBase,
+        accessToken,
+        teamId: selectedTeamId,
+        columnId,
+        baseColumn: column,
+        patch: { title },
+        onTokenRefresh: onUpdateAccessToken,
+        onConflict: () => showNotification('Колонка была изменена. Обновите доску и попробуйте снова.', 'error')
+      });
+      if (result.conflict) {
+        return;
+      }
+      rememberColumn(result.column);
+      setColumns((prev) => prev.map((item) => (item.id === columnId ? { ...item, ...result.column } : item)));
+      handleColumnRenameCancel();
+      await loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
+    } catch (error) {
+      showNotification(error.message || 'Не удалось переименовать колонку', 'error');
+    }
+  };
+
   const handleTaskChange = (field, value) => {
     setTaskForm((prev) => ({ ...prev, [field]: value }));
   };
@@ -1424,7 +1528,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (!id) return;
     setTaskForm((prev) => {
       const next = new Set(prev.assigneeUserIds || []);
-      if (checked) next.add(id);
+      if (checked ?? !next.has(id)) next.add(id);
       else next.delete(id);
       return { ...prev, assigneeUserIds: [...next] };
     });
@@ -1436,7 +1540,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (!id) return;
     setEditorTaskForm((prev) => {
       const next = new Set(prev.assigneeUserIds || []);
-      if (checked) next.add(id);
+      if (checked ?? !next.has(id)) next.add(id);
       else next.delete(id);
       return { ...prev, assigneeUserIds: [...next] };
     });
@@ -1561,6 +1665,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     });
     setCommentDraft('');
     setTaskComments([]);
+    loadedCommentsTaskIdRef.current = '';
   };
 
   const handleInlineEditStart = (task) => {
@@ -1708,6 +1813,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     if (!editorTask || !selectedTeamId || !selectedProjectId) {
       return;
     }
+    const taskId = editorTask.id;
     const body = commentDraft.trim();
     if (!body) {
       showNotification('Введите сообщение', 'error');
@@ -1715,15 +1821,17 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     }
     setIsSavingComment(true);
     try {
-      await request(taskApiBase, accessToken, `/v1/tasks/${editorTask.id}/comments`, {
+      const created = await request(taskApiBase, accessToken, `/v1/tasks/${taskId}/comments`, {
         method: 'POST',
         auth: true,
         headers: { 'X-Team-Id': selectedTeamId },
         body: { body, authorName: (profile?.name || profile?.email || '').trim() }
       }, onUpdateAccessToken);
       setCommentDraft('');
-      await loadTaskComments(editorTask.id);
-      await loadTaskHistory(editorTask.id, { silent: true });
+      if (created?.id) {
+        setTaskComments((prev) => [...prev.filter((item) => item.id !== created.id), created]);
+      }
+      await loadTaskHistory(taskId, { silent: true });
       await loadProjectActivity(selectedTeamId, selectedProjectId, { silent: true });
       showNotification('Сообщение отправлено', 'success');
     } catch (error) {
@@ -1758,6 +1866,14 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
     } catch (error) {
       showNotification(error.message || 'Не удалось удалить сообщение', 'error');
     }
+  };
+
+  const handleLoadMoreTaskHistory = () => {
+    if (!editorTask || isLoadingTaskHistory) return;
+    void loadTaskHistory(editorTask.id, {
+      append: true,
+      offset: taskHistory.length
+    });
   };
 
   const handleDeleteTask = async (taskId) => {
@@ -1850,16 +1966,22 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
           method: 'PATCH',
           auth: true,
           headers: { 'X-Team-Id': selectedTeamId },
-          body: { notifyBeforeMinutes, urgentBeforeMinutes }
+          body: {
+            autoEnabled: Boolean(deadlineSettingsForm.autoEnabled),
+            notifyBeforeMinutes,
+            urgentBeforeMinutes
+          }
         },
         onUpdateAccessToken
       );
       const next = {
+        autoEnabled: data.autoEnabled !== false,
         notifyBeforeMinutes: Number(data.notifyBeforeMinutes || notifyBeforeMinutes),
         urgentBeforeMinutes: Number(data.urgentBeforeMinutes || urgentBeforeMinutes)
       };
       setDeadlineSettings(next);
       setDeadlineSettingsForm({
+        autoEnabled: next.autoEnabled,
         notifyBeforeMinutes: String(next.notifyBeforeMinutes),
         urgentBeforeMinutes: String(next.urgentBeforeMinutes)
       });
@@ -2221,6 +2343,16 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
             <details className="sidebar-card">
               <summary>Авто-дедлайны</summary>
               <form className="sidebar-form" onSubmit={handleDeadlineSettingsSubmit}>
+                <label className="permission-option compact-permission-option">
+                  <input
+                    className="compact-checkbox"
+                    type="checkbox"
+                    checked={deadlineSettingsForm.autoEnabled}
+                    onChange={(event) => setDeadlineSettingsForm((prev) => ({ ...prev, autoEnabled: event.target.checked }))}
+                    disabled={!canManageDeadlineSettings || isLoadingDeadlineSettings}
+                  />
+                  <span>Автоматические уведомления включены</span>
+                </label>
                 <label>
                   <span>Уведомить за, минут</span>
                   <input
@@ -2383,7 +2515,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
           </details>
 
           <details className="sidebar-card">
-            <summary>Активность проекта</summary>
+            <summary>Недавняя активность проекта</summary>
             <div className="activity-feed">
               {isLoadingActivity ? (
                 <p className="muted-caption">Загружаем активность...</p>
@@ -2481,18 +2613,32 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                   {assigneeOptions.length === 0 ? (
                     <p className="muted-caption compact">Участники появятся после добавления в команду или проект.</p>
                   ) : (
-                    <div className="assignee-multi-list">
-                      {assigneeOptions.map((member) => (
-                        <label key={member.userId} className="assignee-multi-item">
-                          <input
-                            type="checkbox"
-                            checked={taskForm.assigneeUserIds.includes(member.userId)}
-                            onChange={(event) => toggleTaskFormAssignee(member.userId, event.target.checked)}
-                          />
-                          <span>{member.displayName}</span>
-                        </label>
-                      ))}
-                    </div>
+                    <>
+                      <input
+                        className="assignee-search-input"
+                        type="search"
+                        value={taskAssigneeSearch}
+                        onChange={(event) => setTaskAssigneeSearch(event.target.value)}
+                        placeholder="Найти участника команды"
+                      />
+                      <div className="assignee-multi-list">
+                        {taskAssigneeSearchResults.length === 0 ? (
+                          <p className="muted-caption compact">Ничего не найдено</p>
+                        ) : taskAssigneeSearchResults.map((member) => {
+                          const selected = taskForm.assigneeUserIds.includes(member.userId);
+                          return (
+                            <button
+                              key={member.userId}
+                              type="button"
+                              className={`assignee-picker-item ${selected ? 'selected' : ''}`}
+                              onClick={() => toggleTaskFormAssignee(member.userId)}
+                            >
+                              {member.displayName}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
                   )}
                 </div>
                 <label className="task-description-field">
@@ -2678,7 +2824,33 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                   onDrop={(event) => void onColumnHeaderDrop(event, column.id, Boolean(column.locked))}
                 >
                   <div>
-                    <h3>{column.title}</h3>
+                    {inlineEditColumnId === column.id ? (
+                      <input
+                        type="text"
+                        autoFocus
+                        className="inline-edit-input column-title-edit-input"
+                        value={inlineEditColumnTitle}
+                        onChange={(event) => setInlineEditColumnTitle(event.target.value)}
+                        onBlur={() => void handleColumnRenameSave(column.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            void handleColumnRenameSave(column.id);
+                          } else if (event.key === 'Escape') {
+                            handleColumnRenameCancel();
+                          }
+                        }}
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        className="column-title-button"
+                        onClick={() => handleColumnRenameStart(column)}
+                        disabled={Boolean(column.locked)}
+                        title={column.locked ? column.title : 'Переименовать колонку'}
+                      >
+                        {column.title}
+                      </button>
+                    )}
                     <p>{items.length} задач</p>
                   </div>
                   <div className="column-actions">
@@ -2753,8 +2925,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                             <strong
                               className="task-card-title"
                               lang="ru"
-                              onDoubleClick={() => handleInlineEditStart(task)}
-                              title="Двойной клик для редактирования"
+                              onClick={() => handleEditTask(task)}
+                              title="Открыть карточку задачи"
                               aria-label="Название задачи"
                             >
                               {task.title}
@@ -2762,12 +2934,6 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                           )}
                         </div>
                         <div className="task-card-top-meta">
-                          <span
-                            className={`task-priority-badge priority-${String(task.priority || 'medium').toLowerCase()}`}
-                          >
-                            {priorityLabel(task.priority)}
-                          </span>
-                          {isTaskOverdue(task) && <span className="task-overdue-badge">Просрочено</span>}
                           <div className="task-card-menu-shell">
                             <button
                               type="button"
@@ -2816,8 +2982,17 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                           </div>
                         </div>
                       </div>
+                      <div className="task-card-badges" aria-label="Метки задачи">
+                        <span
+                          className={`task-priority-badge priority-${String(task.priority || 'medium').toLowerCase()}`}
+                        >
+                          {priorityLabel(task.priority)}
+                        </span>
+                        {isTaskOverdue(task) && <span className="task-overdue-badge">Просрочено</span>}
+                        {isUrgentDeadline(task) && !isTaskOverdue(task) && <span className="task-urgent-badge">Горящий срок</span>}
+                      </div>
                       {Array.isArray(task.tags) && task.tags.length > 0 && (
-                        <div className="task-card-tags" aria-label="Теги">
+                        <div className="task-card-tags" aria-label="Пользовательские теги">
                           {task.tags.map((tag, idx) => (
                             <span key={`${task.id}-${tag}-${idx}`} className="task-chip task-chip-tag">{tag}</span>
                           ))}
@@ -2998,8 +3173,12 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         </div>
 
         {selectedMemberStats && (
-          <div className="task-modal-backdrop" onMouseDown={() => setSelectedMemberStatsUserId('')} role="presentation">
-            <div className="task-modal member-stats-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Статистика участника">
+          <div className="task-modal-backdrop" onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setSelectedMemberStatsUserId('');
+            }
+          }} role="presentation">
+            <div className="task-modal member-stats-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Статистика участника">
               <div className="task-modal-header member-stats-header">
                 <div className="member-stats-header-main">
                   <div className="member-stats-avatar" aria-hidden="true">
@@ -3116,8 +3295,8 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
         )}
 
         {editorTask && (
-          <div className="task-modal-backdrop" onMouseDown={closeTaskEditor} role="presentation">
-            <div className="task-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Редактирование задачи">
+          <div className="task-modal-backdrop" role="presentation">
+            <div className="task-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Редактирование задачи">
               <div className="task-modal-header">
                 <div>
                   <p className="section-label">РЕДАКТИРОВАНИЕ ЗАДАЧИ</p>
@@ -3200,18 +3379,32 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                       {assigneeOptions.length === 0 ? (
                         <p className="muted-caption compact">Участники появятся после добавления в команду или проект.</p>
                       ) : (
-                        <div className="assignee-multi-list">
-                          {assigneeOptions.map((member) => (
-                            <label key={`ed-${member.userId}`} className="assignee-multi-item">
-                              <input
-                                type="checkbox"
-                                checked={editorTaskForm.assigneeUserIds.includes(member.userId)}
-                                onChange={(event) => toggleEditorTaskAssignee(member.userId, event.target.checked)}
-                              />
-                              <span>{member.displayName}</span>
-                            </label>
-                          ))}
-                        </div>
+                        <>
+                          <input
+                            className="assignee-search-input"
+                            type="search"
+                            value={editorAssigneeSearch}
+                            onChange={(event) => setEditorAssigneeSearch(event.target.value)}
+                            placeholder="Найти участника команды"
+                          />
+                          <div className="assignee-multi-list">
+                            {editorAssigneeSearchResults.length === 0 ? (
+                              <p className="muted-caption compact">Ничего не найдено</p>
+                            ) : editorAssigneeSearchResults.map((member) => {
+                              const selected = editorTaskForm.assigneeUserIds.includes(member.userId);
+                              return (
+                                <button
+                                  key={`ed-${member.userId}`}
+                                  type="button"
+                                  className={`assignee-picker-item ${selected ? 'selected' : ''}`}
+                                  onClick={() => toggleEditorTaskAssignee(member.userId)}
+                                >
+                                  {member.displayName}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </>
                       )}
                     </div>
                     <label className="task-description-field">
@@ -3267,7 +3460,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                     </div>
                     <span className="task-comments-count">{taskComments.length}</span>
                   </div>
-                  <div className="task-comments-list">
+                  <div className="task-comments-list" ref={taskCommentsListRef}>
                     {isLoadingComments ? (
                       <p className="empty-state">Загружаем сообщения...</p>
                     ) : taskComments.length === 0 ? (
@@ -3299,7 +3492,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                       <p className="section-label">ИСТОРИЯ</p>
                       <h4>Изменения задачи</h4>
                     </div>
-                    <span className="task-comments-count">{taskHistory.length}</span>
+                    <span className="task-comments-count">{taskHistoryTotal || taskHistory.length}</span>
                   </div>
                   <div className="activity-feed task-history-list">
                     {isLoadingTaskHistory ? (
@@ -3320,6 +3513,16 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
                       );
                     })}
                   </div>
+                  {taskHistory.length < taskHistoryTotal && (
+                    <button
+                      type="button"
+                      className="ghost compact-btn task-history-more"
+                      onClick={handleLoadMoreTaskHistory}
+                      disabled={isLoadingTaskHistory}
+                    >
+                      {isLoadingTaskHistory ? 'Загружаем...' : 'Показать ещё'}
+                    </button>
+                  )}
                 </section>
               </div>
             </div>

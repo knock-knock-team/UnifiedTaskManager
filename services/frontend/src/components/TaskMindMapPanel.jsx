@@ -37,7 +37,7 @@ function buildDefaultPositions(projectLabel, columns, tasksByColumn) {
         y: 210 + row * 58,
         w: 216,
         h: 48,
-        label: (task.title || 'Без названия').slice(0, 80),
+        label: task.title || 'Без названия',
         kind: 'task',
         taskId: task.id,
         columnId: col.id
@@ -424,6 +424,7 @@ export function TaskMindMapPanel({
                   type="button"
                   className={`mindmap-node mindmap-node-task ${done ? 'done' : ''} ${overdue ? 'overdue' : ''}`}
                   style={{ left: node.x, top: node.y, width: node.w, height: node.h }}
+                  title={node.label}
                   onPointerDown={(e) => {
                     e.stopPropagation();
                     onNodePointerDown(e, id);
