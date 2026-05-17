@@ -294,9 +294,9 @@ function App() {
             <Route path="/login" element={isAuthorized ? <Navigate to="/cabinet" replace /> : <LoginPage onLogin={onLogin} />} />
             <Route path="/tasks" element={<ProtectedRoute isAuthorized={isAuthorized}><TasksPage accessToken={accessToken} apiBase={apiBase} taskApiBase={storage.taskApiBase} profile={profile} showNotification={showNotification} onUpdateAccessToken={onUpdateAccessToken} /></ProtectedRoute>} />
             <Route path="/chats" element={<ProtectedRoute isAuthorized={isAuthorized}><ChatPage accessToken={accessToken} apiBase={apiBase} profile={profile} showNotification={showNotification} onUpdateAccessToken={onUpdateAccessToken} /></ProtectedRoute>} />
-            <Route path="/calls" element={<ProtectedRoute isAuthorized={isAuthorized}><CallHome userId={profile?.id} token={accessToken} apiBase={apiBase} showNotification={showNotification} /></ProtectedRoute>} />
+            <Route path="/calls" element={<ProtectedRoute isAuthorized={isAuthorized}><CallHome userId={profile?.id} profile={profile} token={accessToken} apiBase={apiBase} showNotification={showNotification} /></ProtectedRoute>} />
             <Route path="/calls/created/:callId" element={<ProtectedRoute isAuthorized={isAuthorized}><CallCreated userId={profile?.id} token={accessToken} apiBase={apiBase} showNotification={showNotification} /></ProtectedRoute>} />
-            <Route path="/calls/join/:callId" element={<ProtectedRoute isAuthorized={isAuthorized}><CallJoiner userId={profile?.id} token={accessToken} apiBase={apiBase} showNotification={showNotification} /></ProtectedRoute>} />
+            <Route path="/calls/join/:callId" element={<ProtectedRoute isAuthorized={isAuthorized}><CallJoiner userId={profile?.id} profile={profile} token={accessToken} apiBase={apiBase} showNotification={showNotification} /></ProtectedRoute>} />
             <Route
               path="/files"
               element={(

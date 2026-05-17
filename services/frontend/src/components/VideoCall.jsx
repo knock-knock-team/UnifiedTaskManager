@@ -12,6 +12,7 @@ import '../styles/VideoCall.css';
 export function VideoCall({
   callId,
   userId,
+  displayName,
   token,
   apiBase = '/api',
   onCallEnd,
@@ -22,19 +23,49 @@ export function VideoCall({
   const [callState, setCallState] = useState(isInitiator ? 'waiting' : 'joining');
   const [callDuration, setCallDuration] = useState(0);
   const [isAudioEnabled, setIsAudioEnabled] = useState(false);
-  const [isVideoEnabled, setIsVideoEnabled] = useState(false);
   const [error, setError] = useState(null);
   const [participants, setParticipants] = useState([]);
   const [showCopyButton, setShowCopyButton] = useState(false); // Array of {id, stream, connectionState}
   const remotePeerRef = React.useRef(null);
   const trackMapRef = React.useRef({}); // streamId|trackId -> publisherId
+  const remoteAudioTrackIdsRef = React.useRef(new Set());
   const sessionReplacedRef = React.useRef(false);
+  const callUnavailableRef = React.useRef(false);
   const hasRemoteOfferRef = React.useRef(false);
   const publishOfferTimerRef = React.useRef(null);
   const leavingRef = React.useRef(false);
   const endSessionRef = React.useRef(() => {});
   const wsCloseCleanupRef = React.useRef(() => {});
   const closeRtcCleanupRef = React.useRef(() => {});
+  const localDisplayName = React.useMemo(() => (
+    String(displayName || userId || '').trim() || 'Вы'
+  ), [displayName, userId]);
+
+  const rememberRemoteTrack = useCallback((publisherId, payload = {}) => {
+    if (!publisherId || publisherId === userId) return;
+    const kind = payload.kind || payload.trackKind || 'audio';
+    if (kind !== 'audio') return;
+    const trackId = payload.trackId || payload.track_id || payload.id || '';
+    const streamId = payload.streamId || payload.streamID || payload.stream_id || '';
+    remoteAudioTrackIdsRef.current.add(`${publisherId}:${trackId || streamId || remoteAudioTrackIdsRef.current.size}`);
+  }, [userId]);
+
+  const upsertParticipant = useCallback((participantId, updates = {}) => {
+    if (!participantId || participantId === userId) return;
+    setParticipants(prev => {
+      const existing = prev.find(p => p.id === participantId);
+      if (!existing) {
+        return [...prev, {
+          id: participantId,
+          stream: null,
+          connectionState: 'connecting',
+          audioEnabled: false,
+          ...updates
+        }];
+      }
+      return prev.map(p => (p.id === participantId ? { ...p, ...updates } : p));
+    });
+  }, [userId]);
 
   useEffect(() => {
     setLastVideoCallId(callId);
@@ -60,13 +91,8 @@ export function VideoCall({
     setRemoteDescription,
     addIceCandidate,
     toggleAudio,
-    toggleVideo,
     close: closeWebRTC
   } = useWebRTC({
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
-    ],
     onTrack: (event) => {
       // Map incoming stream to participant based on track-added metadata
       const stream = event.streams && event.streams[0];
@@ -78,7 +104,7 @@ export function VideoCall({
         setParticipants(prev => {
           const existing = prev.find(p => p.id === publisher);
           if (!existing) {
-            return [...prev, { id: publisher, stream: stream, connectionState: 'connected' }];
+            return [...prev, { id: publisher, stream: stream, connectionState: 'connected', audioEnabled: false }];
           }
           return prev.map(p => p.id === publisher ? { ...p, stream, connectionState: 'connected' } : p);
         });
@@ -86,7 +112,7 @@ export function VideoCall({
         // Fallback: if remotePeerRef is set, attach to that participant
         const fallbackId = remotePeerRef.current;
         if (fallbackId) {
-          setParticipants(prev => prev.map(p => p.id === fallbackId ? { ...p, stream, connectionState: 'connected' } : p));
+          upsertParticipant(fallbackId, { stream, connectionState: 'connected' });
         } else {
           // Ignore until signaling metadata arrives to avoid duplicate ghost participants.
           console.log('[Call] Track received without publisher mapping yet, waiting for track metadata');
@@ -138,7 +164,14 @@ export function VideoCall({
         ws_send({
           type: 'join',
           call_id: callId,
-          from: userId
+          from: userId,
+          payload: { displayName: localDisplayName }
+        });
+        ws_send({
+          type: 'media-state',
+          call_id: callId,
+          from: userId,
+          payload: { audioEnabled: false, displayName: localDisplayName }
         });
 
         // Delay self-initiated offer to avoid glare with SFU backfill offers.
@@ -148,7 +181,7 @@ export function VideoCall({
             return;
           }
           try {
-            const pubOffer = await createOffer();
+            const pubOffer = await createOffer({ audioReceiveTracks: remoteAudioTrackIdsRef.current.size });
             console.log('[Call] Publishing local tracks, offer sdp len=', pubOffer.sdp?.length);
             ws_send({
               type: 'offer',
@@ -176,47 +209,76 @@ export function VideoCall({
               // store mapping from streamId/trackId to publisher id
               const streamId = message.payload.streamId || message.payload.streamID || message.payload.stream_id;
               const trackId = message.payload.trackId || message.payload.track_id;
+              const remoteName = message.payload.displayName || message.payload.display_name;
               if (streamId) trackMapRef.current[streamId] = message.from;
               if (trackId) trackMapRef.current[trackId] = message.from;
+              rememberRemoteTrack(message.from, message.payload);
               // ensure participant exists
-              setParticipants(prev => {
-                const existing = prev.find(p => p.id === message.from);
-                if (!existing) {
-                  return [...prev, { id: message.from, stream: null, connectionState: 'connecting' }];
-                }
-                return prev;
-              });
+              upsertParticipant(message.from, remoteName ? { displayName: remoteName } : {});
             }
             break;
           case 'ready':
             console.log('[Call] User ready:', message.from);
             // Server orchestrates SFU flows; just remember participant
             remotePeerRef.current = message.from;
-            setParticipants(prev => {
-              const existing = prev.find(p => p.id === message.from);
-              if (!existing) {
-                return [...prev, { id: message.from, stream: null, connectionState: 'connecting' }];
-              }
-              return prev;
-            });
+            upsertParticipant(message.from, message.payload?.displayName ? { displayName: message.payload.displayName } : {});
             break;
 
           case 'participant-joined':
             console.log('[Call] Participant joined:', message.from);
             // remember remote peer id when someone joins
             remotePeerRef.current = message.from;
-            setParticipants(prev => {
-              const existing = prev.find(p => p.id === message.from);
-              if (!existing) {
-                return [...prev, { id: message.from, stream: null, connectionState: 'connecting' }];
-              }
-              return prev;
-            });
+            upsertParticipant(message.from, message.payload?.displayName ? { displayName: message.payload.displayName } : {});
             break;
 
           case 'participant-left':
             console.log('[Call] Participant left:', message.from);
             setParticipants(prev => prev.filter(p => p.id !== message.from));
+            break;
+
+          case 'media-state':
+            upsertParticipant(message.from, {
+              audioEnabled: Boolean(message.payload?.audioEnabled),
+              ...(message.payload?.displayName ? { displayName: message.payload.displayName } : {})
+            });
+            break;
+
+          case 'renegotiate':
+            hasRemoteOfferRef.current = true;
+            console.log('[Call] Received renegotiate from:', message.from, 'payload keys:', Object.keys(message.payload || {}));
+            if (message.payload && message.payload.tracks) {
+              try {
+                const tracks = message.payload.tracks;
+                tracks.forEach(t => {
+                  const trackId = t.track_id || t.trackId;
+                  const streamId = t.stream_id || t.streamId;
+                  const publisher = t.publisher || t.publisher_id || message.from;
+                  const remoteName = t.displayName || t.display_name;
+                  if (trackId) trackMapRef.current[trackId] = publisher;
+                  if (streamId) trackMapRef.current[streamId] = publisher;
+                  rememberRemoteTrack(publisher, t);
+                  // ensure participant exists
+                  upsertParticipant(publisher, remoteName ? { displayName: remoteName } : {});
+                });
+              } catch (e) {
+                console.warn('[Call] Failed to process tracks metadata:', e);
+              }
+            }
+            try {
+              const renegotiateOffer = await createOffer({
+                audioReceiveTracks: remoteAudioTrackIdsRef.current.size
+              });
+              ws_send({
+                type: 'offer',
+                call_id: callId,
+                from: userId,
+                to: message.from,
+                payload: { sdp: renegotiateOffer.sdp, type: renegotiateOffer.type }
+              });
+            } catch (e) {
+              console.error('[Call] Failed to create renegotiation offer:', e);
+              throw e;
+            }
             break;
 
           case 'offer':
@@ -230,16 +292,12 @@ export function VideoCall({
                   const trackId = t.track_id || t.trackId;
                   const streamId = t.stream_id || t.streamId;
                   const publisher = t.publisher || t.publisher_id || message.from;
+                  const remoteName = t.displayName || t.display_name;
                   if (trackId) trackMapRef.current[trackId] = publisher;
                   if (streamId) trackMapRef.current[streamId] = publisher;
+                  rememberRemoteTrack(publisher, t);
                   // ensure participant exists
-                  setParticipants(prev => {
-                    const existing = prev.find(p => p.id === publisher);
-                    if (!existing) {
-                      return [...prev, { id: publisher, stream: null, connectionState: 'connecting' }];
-                    }
-                    return prev;
-                  });
+                  upsertParticipant(publisher, remoteName ? { displayName: remoteName } : {});
                 });
               } catch (e) {
                 console.warn('[Call] Failed to process tracks metadata:', e);
@@ -301,6 +359,11 @@ export function VideoCall({
               endSessionRef.current?.(null, 'info');
               break;
             }
+            if (message.payload?.code === 'call_unavailable') {
+              callUnavailableRef.current = true;
+              setError('Встреча уже завершена или недоступна. Создайте новую комнату.');
+              break;
+            }
             setError(message.payload?.message || 'Call error');
             break;
 
@@ -319,7 +382,7 @@ export function VideoCall({
     onClose: () => {
       console.log('[Call] WebSocket closed');
     },
-    shouldReconnect: () => !sessionReplacedRef.current
+    shouldReconnect: () => !sessionReplacedRef.current && !callUnavailableRef.current
   });
 
   const runEndSession = useCallback((message, notifyType = 'success') => {
@@ -381,35 +444,28 @@ export function VideoCall({
     return () => clearInterval(interval);
   }, [callState]);
 
+  useEffect(() => {
+    if (!userId || !callId) return;
+    ws_send({
+      type: 'media-state',
+      call_id: callId,
+      from: userId,
+      payload: { audioEnabled: isAudioEnabled, displayName: localDisplayName }
+    });
+  }, [callId, isAudioEnabled, localDisplayName, userId, ws_send]);
+
   // Handle audio toggle
   const handleToggleAudio = useCallback(() => {
     const newState = !isAudioEnabled;
     setIsAudioEnabled(newState);
     toggleAudio(newState);
-  }, [isAudioEnabled, toggleAudio]);
-
-  // Handle video toggle (async: первый запуск камеры — отдельный getUserMedia)
-  const handleToggleVideo = useCallback(async () => {
-    const next = !isVideoEnabled;
-    try {
-      await toggleVideo(next);
-      setIsVideoEnabled(next);
-      try {
-        const pubOffer = await createOffer();
-        ws_send({
-          type: 'offer',
-          call_id: callId,
-          from: userId,
-          payload: { sdp: pubOffer.sdp, type: pubOffer.type }
-        });
-      } catch (e) {
-        console.warn('[Call] После изменения камеры не удалось отправить повторный offer:', e);
-      }
-    } catch (e) {
-      console.error(e);
-      showNotification?.('Не удалось получить доступ к камере или обновить соединение', 'error');
-    }
-  }, [isVideoEnabled, toggleVideo, createOffer, ws_send, callId, userId, showNotification]);
+    ws_send({
+      type: 'media-state',
+      call_id: callId,
+      from: userId,
+      payload: { audioEnabled: newState, displayName: localDisplayName }
+    });
+  }, [isAudioEnabled, toggleAudio, ws_send, callId, userId, localDisplayName]);
 
   // Handle copy meeting link
   const handleCopyLink = useCallback(() => {
@@ -467,14 +523,12 @@ export function VideoCall({
           {/* Local participant */}
           <div className="participant-tile local">
             {localStream ? (
-              isVideoEnabled ? (
-                <LocalVideo stream={localStream} userId={userId} />
-              ) : (
-                <div className="video-placeholder video-placeholder-muted">
-                  <span>Камера выключена</span>
-                  <span className="video-placeholder-hint">Включите камеру кнопкой ниже</span>
-                </div>
-              )
+              <ParticipantAudioTile
+                userId={userId}
+                label={localDisplayName}
+                audioEnabled={isAudioEnabled}
+                isLocal
+              />
             ) : (
               <div className="video-placeholder">
                 <span>Подключение…</span>
@@ -485,13 +539,12 @@ export function VideoCall({
           {/* Remote participants */}
           {participants.map((participant) => (
             <div key={participant.id} className="participant-tile remote">
-              {participant.stream ? (
-                <RemoteVideo stream={participant.stream} userId={participant.id} />
-              ) : (
-                <div className="video-placeholder">
-                  <span>Подключение к {participant.id.slice(0, 8)}…</span>
-                </div>
-              )}
+              <ParticipantAudioTile
+                userId={participant.id}
+                label={participant.displayName}
+                stream={participant.stream}
+                audioEnabled={participant.audioEnabled}
+              />
             </div>
           ))}
 
@@ -529,14 +582,6 @@ export function VideoCall({
         </button>
 
         <button
-          className={`control-btn ${isVideoEnabled ? 'active' : 'inactive'}`}
-          onClick={handleToggleVideo}
-          title={isVideoEnabled ? 'Выключить камеру' : 'Включить камеру'}
-        >
-          📹
-        </button>
-
-        <button
           className="control-btn info-btn"
           onClick={handleCopyLink}
           title="Копировать ссылку на встречу"
@@ -565,13 +610,13 @@ export function VideoCall({
 }
 
 /**
- * Local video component
+ * Audio-only participant tile.
  */
-function LocalVideo({ stream, userId }) {
-  const videoRef = React.useRef(null);
+function ParticipantAudioTile({ stream, userId, label, audioEnabled = false, isLocal = false }) {
+  const audioRef = React.useRef(null);
 
   React.useEffect(() => {
-    const el = videoRef.current;
+    const el = audioRef.current;
     if (!el) return undefined;
     el.srcObject = stream || null;
     return () => {
@@ -585,37 +630,16 @@ function LocalVideo({ stream, userId }) {
   }, [stream]);
 
   return (
-    <div className="video-track">
-      <video ref={videoRef} autoPlay playsInline muted />
-      <div className="video-label">Вы ({userId.slice(0, 8)})</div>
-    </div>
-  );
-}
-
-/**
- * Remote video component
- */
-function RemoteVideo({ stream, userId }) {
-  const videoRef = React.useRef(null);
-
-  React.useEffect(() => {
-    const el = videoRef.current;
-    if (!el) return undefined;
-    el.srcObject = stream || null;
-    return () => {
-      try {
-        el.pause();
-      } catch {
-        // ignore
-      }
-      el.srcObject = null;
-    };
-  }, [stream]);
-
-  return (
-    <div className="video-track">
-      <video ref={videoRef} autoPlay playsInline />
-      <div className="video-label">{userId.slice(0, 8)}</div>
+    <div className={`audio-tile ${audioEnabled ? 'mic-on' : 'mic-off'}`}>
+      {!isLocal && stream ? <audio ref={audioRef} autoPlay playsInline /> : null}
+      <div className="audio-avatar" aria-hidden="true">
+        {audioEnabled ? '🎙' : 'MIC'}
+      </div>
+      <div className="audio-tile-title">{label || userId.slice(0, 8)}</div>
+      <div className={`mic-status-pill ${audioEnabled ? 'on' : 'off'}`}>
+        <span className="mic-status-dot" aria-hidden="true" />
+        {audioEnabled ? 'Микрофон включён' : 'Микрофон выключен'}
+      </div>
     </div>
   );
 }

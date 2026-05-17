@@ -13,6 +13,7 @@ export function useWebSocket(url, handlers = {}) {
   const handlersRef = useRef(handlers);
   const reconnectTimerRef = useRef(null);
   const shouldRunRef = useRef(true);
+  const messageProcessingRef = useRef(Promise.resolve());
 
   // Update handlers ref without triggering reconnection
   useEffect(() => {
@@ -44,7 +45,12 @@ export function useWebSocket(url, handlers = {}) {
         try {
           const message = JSON.parse(event.data);
           console.log('[WebSocket] Received:', message.type);
-          handlersRef.current.onMessage?.(message);
+          messageProcessingRef.current = messageProcessingRef.current
+            .catch(() => {})
+            .then(() => handlersRef.current.onMessage?.(message))
+            .catch((error) => {
+              console.error('[WebSocket] Message handler error:', error);
+            });
         } catch (error) {
           console.error('[WebSocket] Parse error:', error);
         }

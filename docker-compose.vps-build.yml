@@ -13,7 +13,7 @@ services:
       GATEWAY_USER_SERVICE_URL: http://user-service:8082
       GATEWAY_TASK_SERVICE_URL: http://task-service:8083
       GATEWAY_CHAT_SERVICE_URL: http://chat-service:8084
-      GATEWAY_CALL_SERVICE_URL: http://sfu-service:8086
+      GATEWAY_CALL_SERVICE_URL: http://host.docker.internal:8086
       GATEWAY_FILE_SERVICE_URL: http://file-service:8088
       GATEWAY_ML_SERVICE_URL: http://ml-service:8087
       GATEWAY_NOTIFICATION_SERVICE_URL: http://notification-service:8089
@@ -23,10 +23,11 @@ services:
       - user-service
       - task-service
       - chat-service
-      - sfu-service
       - file-service
       - ml-service
       - notification-service
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - backend
 
@@ -43,6 +44,8 @@ services:
     env_file: ${ENV_FILE:-.env.production}
     depends_on:
       - api-gateway
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - backend
     healthcheck:
@@ -133,18 +136,17 @@ services:
       dockerfile: services/sfu-service/Dockerfile
     pull_policy: never
     restart: unless-stopped
+    network_mode: host
     env_file: ${ENV_FILE:-.env.production}
     environment:
       SFU_ADDR: :8086
+      SFU_UDP_PORT_MIN: ${SFU_UDP_PORT_MIN:-50000}
+      SFU_UDP_PORT_MAX: ${SFU_UDP_PORT_MAX:-50100}
       JWT_SECRET: ${JWT_SECRET}
       TURN_URL: turn:coturn:3478
       VITE_TURN_URL: ${VITE_TURN_URL:-}
       VITE_TURN_USERNAME: ${VITE_TURN_USERNAME:-turnuser}
       VITE_TURN_CREDENTIAL: ${VITE_TURN_CREDENTIAL:-change-me-turn-password}
-    networks:
-      backend:
-        aliases:
-          - call-service
 
   file-service:
     build:
@@ -279,24 +281,27 @@ services:
       - --lt-cred-mech
       - --user=${VITE_TURN_USERNAME:-turnuser}:${VITE_TURN_CREDENTIAL:-change-me-turn-password}
       - --realm=${TURN_REALM:-unified-task-manager}
-      - --external-ip=${TURN_EXTERNAL_IP}
+      - --external-ip=${TURN_EXTERNAL_IP}/${TURN_RELAY_IP}
+      - --relay-ip=${TURN_RELAY_IP}
       - --listening-ip=0.0.0.0
       - --no-cli
       - --no-multicast-peers
       - --min-port=49160
-      - --max-port=49200
+      - --max-port=49999
 
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
     volumes:
-      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx/vps.conf:/etc/nginx/conf.d/default.conf:ro
       - unified_task_manager_nginx_logs:/var/log/nginx
     depends_on:
       frontend:
         condition: service_healthy
       api-gateway:
         condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - backend
     healthcheck:

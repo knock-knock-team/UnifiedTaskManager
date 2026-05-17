@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,42 @@ import (
 )
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+func envInt(name string, fallback uint16) uint16 {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > 65535 {
+		return fallback
+	}
+	return uint16(value)
+}
+
+func sanitizeDisplayName(value, fallback string) string {
+	name := strings.TrimSpace(value)
+	if name == "" {
+		name = strings.TrimSpace(fallback)
+	}
+	if name == "" {
+		return "Participant"
+	}
+	runes := []rune(name)
+	if len(runes) > 80 {
+		name = string(runes[:80])
+	}
+	return name
+}
+
+func makeForwardedTrackIDs(publisherID, kind string) (string, string) {
+	cleanPublisherID := strings.NewReplacer("-", "", "_", "").Replace(publisherID)
+	if cleanPublisherID == "" {
+		cleanPublisherID = "unknown"
+	}
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36) + strconv.Itoa(rand.Intn(1000000))
+	return "sfu-" + kind + "-" + cleanPublisherID + "-" + suffix, "sfu-stream-" + cleanPublisherID + "-" + suffix
+}
 
 // incomingMsg represents messages received from clients
 type incomingMsg struct {
@@ -51,6 +88,15 @@ type icePayload struct {
 	SDPMLineIndex uint16 `json:"sdpMLineIndex"`
 }
 
+type mediaStatePayload struct {
+	AudioEnabled bool   `json:"audioEnabled"`
+	DisplayName  string `json:"displayName,omitempty"`
+}
+
+type joinPayload struct {
+	DisplayName string `json:"displayName,omitempty"`
+}
+
 type callSession struct {
 	ID          string              `json:"id"`
 	InitiatorID string              `json:"initiator_id"`
@@ -61,11 +107,12 @@ type callSession struct {
 }
 
 type publishedTrack struct {
-	publisherID string
-	trackID     string
-	streamID    string
-	kind        string
-	local       *webrtc.TrackLocalStaticRTP
+	publisherID   string
+	publisherName string
+	trackID       string
+	streamID      string
+	kind          string
+	local         *webrtc.TrackLocalStaticRTP
 }
 
 type claims struct {
@@ -85,13 +132,33 @@ type Room struct {
 // Peer represents a websocket + PeerConnection client
 type Peer struct {
 	id              string
+	displayName     string
 	conn            *websocket.Conn
 	pc              *webrtc.PeerConnection
 	room            *Room
 	send            chan outgoingMsg
 	mu              sync.Mutex
+	negotiationMu   sync.Mutex
+	audioEnabled    bool
 	remoteDescSet   bool
 	pendingICEQueue []webrtc.ICECandidateInit
+}
+
+func (p *Peer) sendMessage(msg outgoingMsg) (sent bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("peer %s send skipped after channel close: %v", p.id, recovered)
+			sent = false
+		}
+	}()
+
+	select {
+	case p.send <- msg:
+		return true
+	default:
+		log.Printf("peer %s send queue full, dropping message type=%s", p.id, msg.Type)
+		return false
+	}
 }
 
 var (
@@ -312,6 +379,15 @@ func (r *Room) addPeer(p *Peer) {
 	if existing := r.peers[p.id]; existing != nil && existing != p {
 		prevPeer = existing
 	}
+	if prevPeer != nil {
+		filteredTracks := make([]*publishedTrack, 0, len(r.tracks))
+		for _, tr := range r.tracks {
+			if tr.publisherID != p.id {
+				filteredTracks = append(filteredTracks, tr)
+			}
+		}
+		r.tracks = filteredTracks
+	}
 	r.peers[p.id] = p
 	// capture peers snapshot
 	peersSnapshot := make([]*Peer, 0, len(r.peers))
@@ -324,8 +400,7 @@ func (r *Room) addPeer(p *Peer) {
 
 	// If the same user reconnects, terminate the stale websocket session.
 	if prevPeer != nil {
-		select {
-		case prevPeer.send <- outgoingMsg{
+		prevPeer.sendMessage(outgoingMsg{
 			Type:   "error",
 			CallID: r.id,
 			From:   "sfu",
@@ -334,9 +409,7 @@ func (r *Room) addPeer(p *Peer) {
 				"message": "another session connected for this user",
 				"code":    "session_replaced",
 			},
-		}:
-		default:
-		}
+		})
 		_ = prevPeer.conn.Close()
 	}
 
@@ -345,9 +418,19 @@ func (r *Room) addPeer(p *Peer) {
 		if other.id == p.id {
 			continue
 		}
-		other.send <- outgoingMsg{Type: "participant-joined", CallID: r.id, From: p.id}
+		other.sendMessage(outgoingMsg{Type: "participant-joined", CallID: r.id, From: p.id, Payload: map[string]string{"displayName": p.displayName}})
 		// Also send 'ready' so initiators will create offers (keeps compatibility with existing frontend)
-		other.send <- outgoingMsg{Type: "ready", CallID: r.id, From: p.id}
+		other.sendMessage(outgoingMsg{Type: "ready", CallID: r.id, From: p.id, Payload: map[string]string{"displayName": p.displayName}})
+		p.sendMessage(outgoingMsg{
+			Type:   "media-state",
+			CallID: r.id,
+			From:   other.id,
+			To:     p.id,
+			Payload: mediaStatePayload{
+				AudioEnabled: other.audioEnabled,
+				DisplayName:  other.displayName,
+			},
+		})
 	}
 
 	// Backfill already published tracks for the new participant.
@@ -357,17 +440,20 @@ func (r *Room) addPeer(p *Peer) {
 	}
 
 	for _, pub := range publishedSnapshot {
-		p.send <- outgoingMsg{
+		p.sendMessage(outgoingMsg{
 			Type:   "track-added",
 			CallID: r.id,
 			From:   pub.publisherID,
 			Payload: map[string]interface{}{
-				"trackId":  pub.trackID,
-				"streamId": pub.streamID,
-				"kind":     pub.kind,
+				"trackId":     pub.trackID,
+				"streamId":    pub.streamID,
+				"kind":        pub.kind,
+				"displayName": pub.publisherName,
 			},
-		}
+		})
+		p.negotiationMu.Lock()
 		sender, err := p.pc.AddTrack(pub.local)
+		p.negotiationMu.Unlock()
 		if err != nil {
 			log.Printf("AddTrack(backfill) failed for subscriber %s: %v", p.id, err)
 			continue
@@ -382,38 +468,25 @@ func (r *Room) addPeer(p *Peer) {
 		}(sender)
 	}
 
-	offer, err := p.pc.CreateOffer(nil)
-	if err != nil {
-		log.Printf("CreateOffer(backfill) failed for %s: %v", p.id, err)
-		return
-	}
-	if err := p.pc.SetLocalDescription(offer); err != nil {
-		log.Printf("SetLocalDescription(backfill) failed for %s: %v", p.id, err)
-		return
-	}
-	gatherComplete := webrtc.GatheringCompletePromise(p.pc)
-	<-gatherComplete
-	localDesc := p.pc.LocalDescription()
 	backfillTracks := make([]map[string]interface{}, 0, len(publishedSnapshot))
 	for _, pub := range publishedSnapshot {
 		backfillTracks = append(backfillTracks, map[string]interface{}{
-			"publisher": pub.publisherID,
-			"track_id":  pub.trackID,
-			"kind":      pub.kind,
-			"stream_id": pub.streamID,
+			"publisher":   pub.publisherID,
+			"track_id":    pub.trackID,
+			"kind":        pub.kind,
+			"stream_id":   pub.streamID,
+			"displayName": pub.publisherName,
 		})
 	}
-	p.send <- outgoingMsg{
-		Type:   "offer",
+	p.sendMessage(outgoingMsg{
+		Type:   "renegotiate",
 		CallID: r.id,
 		From:   "sfu",
 		To:     p.id,
 		Payload: map[string]interface{}{
-			"sdp":    localDesc.SDP,
-			"type":   localDesc.Type.String(),
 			"tracks": backfillTracks,
 		},
-	}
+	})
 }
 
 func (p *Peer) markRemoteDescriptionSet() {
@@ -461,7 +534,40 @@ func (r *Room) removePeer(p *Peer) {
 	r.mu.Unlock()
 
 	for _, other := range peersSnapshot {
-		other.send <- outgoingMsg{Type: "participant-left", CallID: r.id, From: p.id}
+		other.sendMessage(outgoingMsg{Type: "participant-left", CallID: r.id, From: p.id})
+	}
+}
+
+func (r *Room) broadcastMediaState(sender *Peer, state mediaStatePayload) {
+	if strings.TrimSpace(state.DisplayName) == "" {
+		state.DisplayName = sender.displayName
+	}
+
+	r.mu.Lock()
+	peersSnapshot := make([]*Peer, 0, len(r.peers))
+	for _, peer := range r.peers {
+		if peer.id != sender.id {
+			peersSnapshot = append(peersSnapshot, peer)
+		}
+	}
+	r.mu.Unlock()
+
+	for _, peer := range peersSnapshot {
+		peer.sendMessage(outgoingMsg{
+			Type:    "media-state",
+			CallID:  r.id,
+			From:    sender.id,
+			To:      peer.id,
+			Payload: state,
+		})
+	}
+}
+
+func drainRemoteTrack(track *webrtc.TrackRemote) {
+	for {
+		if _, _, err := track.ReadRTP(); err != nil {
+			return
+		}
 	}
 }
 
@@ -469,8 +575,22 @@ func (r *Room) removePeer(p *Peer) {
 func (r *Room) publishTrack(pub *Peer, track *webrtc.TrackRemote, recv *webrtc.RTPReceiver) {
 	log.Printf("Room %s: publishing track %s from %s kind=%s", r.id, track.ID(), pub.id, track.Kind().String())
 
-	// Create a local track that we can add to other peers
-	local, err := webrtc.NewTrackLocalStaticRTP(track.Codec().RTPCodecCapability, track.ID(), track.StreamID())
+	trackKind := track.Kind().String()
+	r.mu.Lock()
+	for _, existing := range r.tracks {
+		if existing.publisherID == pub.id && existing.kind == trackKind {
+			r.mu.Unlock()
+			log.Printf("Room %s: ignoring duplicate %s track %s from %s", r.id, trackKind, track.ID(), pub.id)
+			go drainRemoteTrack(track)
+			return
+		}
+	}
+	r.mu.Unlock()
+
+	// Browser track IDs can repeat after reconnect. Generate SFU-owned IDs so
+	// one SDP never contains duplicate a=msid lines for forwarded tracks.
+	forwardedTrackID, forwardedStreamID := makeForwardedTrackIDs(pub.id, trackKind)
+	local, err := webrtc.NewTrackLocalStaticRTP(track.Codec().RTPCodecCapability, forwardedTrackID, forwardedStreamID)
 	if err != nil {
 		log.Printf("failed to create local track: %v", err)
 		return
@@ -479,11 +599,12 @@ func (r *Room) publishTrack(pub *Peer, track *webrtc.TrackRemote, recv *webrtc.R
 	// Add to all subscribers (other peers)
 	r.mu.Lock()
 	r.tracks = append(r.tracks, &publishedTrack{
-		publisherID: pub.id,
-		trackID:     track.ID(),
-		streamID:    track.StreamID(),
-		kind:        track.Kind().String(),
-		local:       local,
+		publisherID:   pub.id,
+		publisherName: pub.displayName,
+		trackID:       forwardedTrackID,
+		streamID:      forwardedStreamID,
+		kind:          trackKind,
+		local:         local,
 	})
 	subs := make([]*Peer, 0, len(r.peers))
 	for _, p := range r.peers {
@@ -496,9 +617,11 @@ func (r *Room) publishTrack(pub *Peer, track *webrtc.TrackRemote, recv *webrtc.R
 
 	for _, sub := range subs {
 		// Notify subscriber that a new track will be added from publisher
-		sub.send <- outgoingMsg{Type: "track-added", CallID: r.id, From: pub.id, Payload: map[string]interface{}{"trackId": track.ID(), "streamId": track.StreamID(), "kind": track.Kind().String()}}
+		sub.sendMessage(outgoingMsg{Type: "track-added", CallID: r.id, From: pub.id, Payload: map[string]interface{}{"trackId": forwardedTrackID, "streamId": forwardedStreamID, "kind": trackKind, "displayName": pub.displayName}})
 
+		sub.negotiationMu.Lock()
 		sender, err := sub.pc.AddTrack(local)
+		sub.negotiationMu.Unlock()
 		if err != nil {
 			log.Printf("AddTrack failed for subscriber %s: %v", sub.id, err)
 			continue
@@ -529,30 +652,19 @@ func (r *Room) publishTrack(pub *Peer, track *webrtc.TrackRemote, recv *webrtc.R
 		}
 	}()
 
-	// Now renegotiate each subscriber so they receive the new m-line
+	// Ask subscribers to initiate renegotiation. Keeping browser clients as
+	// offerers avoids DTLS role conflicts in Chrome after the initial offer.
 	for _, sub := range subs {
-		offer, err := sub.pc.CreateOffer(nil)
-		if err != nil {
-			log.Printf("CreateOffer failed for %s: %v", sub.id, err)
-			continue
-		}
-		if err := sub.pc.SetLocalDescription(offer); err != nil {
-			log.Printf("SetLocalDescription failed for %s: %v", sub.id, err)
-			continue
-		}
-		// Wait for ICE gathering
-		gatherComplete := webrtc.GatheringCompletePromise(sub.pc)
-		<-gatherComplete
-		localDesc := sub.pc.LocalDescription()
 		// include track metadata so subscribers can map incoming tracks to publishers
 		tracksMeta := []map[string]interface{}{{
-			"publisher": pub.id,
-			"track_id":  track.ID(),
-			"kind":      track.Kind().String(),
-			"stream_id": track.StreamID(),
+			"publisher":   pub.id,
+			"track_id":    forwardedTrackID,
+			"kind":        trackKind,
+			"stream_id":   forwardedStreamID,
+			"displayName": pub.displayName,
 		}}
-		payload := map[string]interface{}{"sdp": localDesc.SDP, "type": localDesc.Type.String(), "tracks": tracksMeta}
-		sub.send <- outgoingMsg{Type: "offer", CallID: r.id, From: "sfu", To: sub.id, Payload: payload}
+		payload := map[string]interface{}{"tracks": tracksMeta}
+		sub.sendMessage(outgoingMsg{Type: "renegotiate", CallID: r.id, From: "sfu", To: sub.id, Payload: payload})
 	}
 }
 
@@ -576,14 +688,27 @@ func wsSFUHandler(w http.ResponseWriter, r *http.Request) {
 
 	config := webrtc.Configuration{}
 	if iceURL != "" {
+		iceURLs := []string{iceURL}
+		if strings.HasPrefix(iceURL, "turn:") && !strings.Contains(iceURL, "transport=") {
+			iceURLs = append(iceURLs, iceURL+"?transport=tcp")
+		}
 		config.ICEServers = []webrtc.ICEServer{{
-			URLs:       []string{iceURL},
+			URLs:       iceURLs,
 			Username:   iceUsername,
 			Credential: iceCred,
 		}}
 	}
 
-	pc, err := webrtc.NewPeerConnection(config)
+	var settingEngine webrtc.SettingEngine
+	udpMin := envInt("SFU_UDP_PORT_MIN", 50000)
+	udpMax := envInt("SFU_UDP_PORT_MAX", 50100)
+	if udpMin <= udpMax {
+		if err := settingEngine.SetEphemeralUDPPortRange(udpMin, udpMax); err != nil {
+			log.Printf("failed to set SFU UDP port range %d-%d: %v", udpMin, udpMax, err)
+		}
+	}
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine))
+	pc, err := api.NewPeerConnection(config)
 	if err != nil {
 		log.Printf("failed create pc: %v", err)
 		conn.Close()
@@ -592,6 +717,7 @@ func wsSFUHandler(w http.ResponseWriter, r *http.Request) {
 
 	peer := &Peer{
 		id:              authClaims.Subject,
+		displayName:     sanitizeDisplayName("", authClaims.Subject),
 		conn:            conn,
 		pc:              pc,
 		send:            make(chan outgoingMsg, 16),
@@ -604,7 +730,14 @@ func wsSFUHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cand := c.ToJSON()
-		peer.send <- outgoingMsg{Type: "ice-candidate", Payload: map[string]interface{}{"candidate": cand.Candidate, "sdpMid": cand.SDPMid, "sdpMLineIndex": cand.SDPMLineIndex}}
+		log.Printf("peer %s ICE candidate: %s", peer.id, cand.Candidate)
+		peer.sendMessage(outgoingMsg{Type: "ice-candidate", Payload: map[string]interface{}{"candidate": cand.Candidate, "sdpMid": cand.SDPMid, "sdpMLineIndex": cand.SDPMLineIndex}})
+	})
+	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		log.Printf("peer %s ICE connection state: %s", peer.id, state.String())
+	})
+	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		log.Printf("peer %s peer connection state: %s", peer.id, state.String())
 	})
 
 	// When the remote adds a track, publish it to other peers
@@ -643,17 +776,24 @@ func wsSFUHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			if im.From != "" && im.From != authClaims.Subject {
 				log.Printf("join user mismatch: from=%s token-sub=%s", im.From, authClaims.Subject)
-				peer.send <- outgoingMsg{Type: "error", CallID: callID, Payload: map[string]string{"message": "user mismatch"}}
+				peer.sendMessage(outgoingMsg{Type: "error", CallID: callID, Payload: map[string]string{"message": "user mismatch"}})
 				goto done
 			}
 			callsMu.Lock()
 			session := calls[callID]
 			callsMu.Unlock()
 			if session == nil || session.Status == "ended" {
-				peer.send <- outgoingMsg{Type: "error", CallID: callID, Payload: map[string]string{"message": "call unavailable"}}
+				peer.sendMessage(outgoingMsg{Type: "error", CallID: callID, Payload: map[string]string{"message": "call unavailable", "code": "call_unavailable"}})
 				goto done
 			}
+			var joinData joinPayload
+			if len(im.Payload) > 0 {
+				if err := json.Unmarshal(im.Payload, &joinData); err != nil {
+					log.Printf("invalid join payload: %v", err)
+				}
+			}
 			peer.id = authClaims.Subject
+			peer.displayName = sanitizeDisplayName(joinData.DisplayName, authClaims.Subject)
 			room := getRoom(callID)
 			peer.room = room
 			room.addPeer(peer)
@@ -664,9 +804,11 @@ func wsSFUHandler(w http.ResponseWriter, r *http.Request) {
 				log.Printf("invalid offer payload: %v", err)
 				continue
 			}
+			peer.negotiationMu.Lock()
 			offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: s.SDP}
 			if err := peer.pc.SetRemoteDescription(offer); err != nil {
 				log.Printf("SetRemoteDescription failed: %v", err)
+				peer.negotiationMu.Unlock()
 				continue
 			}
 			peer.markRemoteDescriptionSet()
@@ -675,18 +817,18 @@ func wsSFUHandler(w http.ResponseWriter, r *http.Request) {
 			answer, err := peer.pc.CreateAnswer(nil)
 			if err != nil {
 				log.Printf("CreateAnswer failed: %v", err)
+				peer.negotiationMu.Unlock()
 				continue
 			}
 			if err := peer.pc.SetLocalDescription(answer); err != nil {
 				log.Printf("SetLocalDescription failed: %v", err)
+				peer.negotiationMu.Unlock()
 				continue
 			}
-			gatherComplete := webrtc.GatheringCompletePromise(peer.pc)
-			<-gatherComplete
-
 			localDesc := peer.pc.LocalDescription()
 			payload := map[string]interface{}{"sdp": localDesc.SDP, "type": localDesc.Type.String()}
-			peer.send <- outgoingMsg{Type: "answer", CallID: im.CallID, From: "sfu", To: im.From, Payload: payload}
+			peer.sendMessage(outgoingMsg{Type: "answer", CallID: im.CallID, From: "sfu", To: im.From, Payload: payload})
+			peer.negotiationMu.Unlock()
 
 		case "answer":
 			var s sdpPayload
@@ -694,12 +836,15 @@ func wsSFUHandler(w http.ResponseWriter, r *http.Request) {
 				log.Printf("invalid answer payload: %v", err)
 				continue
 			}
+			peer.negotiationMu.Lock()
 			answer := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: s.SDP}
 			if err := peer.pc.SetRemoteDescription(answer); err != nil {
 				log.Printf("SetRemoteDescription(answer) failed: %v", err)
+				peer.negotiationMu.Unlock()
 				continue
 			}
 			peer.markRemoteDescriptionSet()
+			peer.negotiationMu.Unlock()
 
 		case "ice-candidate", "ice_candidate":
 			var ic icePayload
@@ -712,6 +857,23 @@ func wsSFUHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			cand := webrtc.ICECandidateInit{Candidate: ic.Candidate, SDPMid: &ic.SDPMid, SDPMLineIndex: &ic.SDPMLineIndex}
 			peer.addOrQueueICECandidate(cand)
+
+		case "media-state":
+			var state mediaStatePayload
+			if err := json.Unmarshal(im.Payload, &state); err != nil {
+				log.Printf("invalid media-state payload: %v", err)
+				continue
+			}
+			peer.mu.Lock()
+			peer.audioEnabled = state.AudioEnabled
+			if strings.TrimSpace(state.DisplayName) != "" {
+				peer.displayName = sanitizeDisplayName(state.DisplayName, authClaims.Subject)
+				state.DisplayName = peer.displayName
+			}
+			peer.mu.Unlock()
+			if peer.room != nil {
+				peer.room.broadcastMediaState(peer, state)
+			}
 
 		case "end":
 			// Client asked to leave

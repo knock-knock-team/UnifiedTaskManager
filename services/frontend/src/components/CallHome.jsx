@@ -10,6 +10,7 @@ import '../styles/CallHome.css';
  */
 export function CallHome({
   userId,
+  profile,
   token,
   apiBase = '/api',
   showNotification
@@ -35,6 +36,7 @@ export function CallHome({
     return (
       <CallCreator
         userId={userId}
+        profile={profile}
         token={token}
         apiBase={apiBase}
         showNotification={showNotification}
@@ -50,6 +52,7 @@ export function CallHome({
     return (
       <CallJoiner
         userId={userId}
+        profile={profile}
         token={token}
         apiBase={apiBase}
         initialCallId={joinId || undefined}

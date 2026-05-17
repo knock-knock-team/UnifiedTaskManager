@@ -9,6 +9,7 @@ import '../styles/CallJoiner.css';
  */
 export function CallJoiner({
   userId,
+  profile,
   token,
   apiBase = '/api',
   initialCallId,
@@ -96,6 +97,7 @@ export function CallJoiner({
       <VideoCall
         callId={activeCall.id}
         userId={userId}
+        displayName={profile?.name || profile?.tag || profile?.email || userId}
         token={token}
         apiBase={apiBase}
         isInitiator={!!activeCall.isInitiator}

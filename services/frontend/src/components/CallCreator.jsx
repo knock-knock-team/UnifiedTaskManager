@@ -9,6 +9,7 @@ import '../styles/CallCreator.css';
  */
 export function CallCreator({
   userId,
+  profile,
   token,
   apiBase = '/api',
   onCallCreated,
@@ -89,6 +90,7 @@ export function CallCreator({
       <VideoCall
         callId={activeCall.id}
         userId={userId}
+        displayName={profile?.name || profile?.tag || profile?.email || userId}
         token={token}
         apiBase={apiBase}
         isInitiator={true}

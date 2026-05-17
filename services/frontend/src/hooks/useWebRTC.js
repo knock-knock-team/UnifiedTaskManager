@@ -22,14 +22,39 @@ export function useWebRTC(config = {}) {
   ];
 
   if (envTurnUrl) {
+    const turnUrls = [envTurnUrl];
+    if (envTurnUrl.startsWith('turn:') && !/[?&]transport=/.test(envTurnUrl)) {
+      turnUrls.push(`${envTurnUrl}?transport=tcp`);
+    }
+
     defaultIceServers.push({
-      urls: envTurnUrl,
+      urls: turnUrls,
       username: envTurnUser || undefined,
       credential: envTurnPass || undefined
     });
   }
 
   const iceServers = config.iceServers || defaultIceServers;
+
+  const ensureAudioReceiveTransceivers = useCallback((peerConnection, desiredCount) => {
+    const targetCount = Math.max(0, Number(desiredCount) || 0);
+    if (!peerConnection || targetCount === 0) return;
+
+    const usableAudioTransceivers = peerConnection.getTransceivers().filter((transceiver) => {
+      const senderTrack = transceiver.sender?.track;
+      return (
+        transceiver.receiver?.track?.kind === 'audio' &&
+        senderTrack?.kind !== 'audio' &&
+        transceiver.direction !== 'inactive' &&
+        !transceiver.stopped
+      );
+    });
+
+    for (let i = usableAudioTransceivers.length; i < targetCount; i += 1) {
+      console.log('[WebRTC] add recvonly audio transceiver for remote track slot');
+      peerConnection.addTransceiver('audio', { direction: 'recvonly' });
+    }
+  }, []);
 
   // Initialize peer connection
   const initPeerConnection = useCallback(() => {
@@ -40,7 +65,8 @@ export function useWebRTC(config = {}) {
     console.log('[WebRTC] initPeerConnection using ICE servers:', iceServers);
 
     const peerConnection = new RTCPeerConnection({
-      iceServers
+      iceServers,
+      iceTransportPolicy: envTurnUrl ? 'relay' : 'all'
     });
 
     peerConnection.onicecandidate = (event) => {
@@ -86,6 +112,24 @@ export function useWebRTC(config = {}) {
     try {
       const wantAudioEnabled = !!constraints.audio;
       const wantVideoEnabled = !!constraints.video;
+      const pc = initPeerConnection();
+      const existingStream = localStreamRef.current;
+      const existingAudioTracks = existingStream
+        ? existingStream.getAudioTracks().filter((track) => track.readyState !== 'ended')
+        : [];
+
+      if (existingStream && existingAudioTracks.length > 0 && !wantVideoEnabled) {
+        existingAudioTracks.forEach((track) => {
+          track.enabled = wantAudioEnabled;
+          const alreadySending = pc.getSenders().some((sender) => sender.track === track);
+          if (!alreadySending) {
+            console.log('[WebRTC] add existing audio track:', track.kind);
+            pc.addTrack(track, existingStream);
+          }
+        });
+        setLocalStream(existingStream);
+        return existingStream;
+      }
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -99,10 +143,12 @@ export function useWebRTC(config = {}) {
       localStreamRef.current = stream;
       setLocalStream(stream);
 
-      const pc = initPeerConnection();
       stream.getTracks().forEach((track) => {
-        console.log('[WebRTC] addTrack:', track.kind);
-        pc.addTrack(track, stream);
+        const alreadySending = pc.getSenders().some((sender) => sender.track === track);
+        if (!alreadySending) {
+          console.log('[WebRTC] addTrack:', track.kind);
+          pc.addTrack(track, stream);
+        }
       });
 
       return stream;
@@ -118,7 +164,10 @@ export function useWebRTC(config = {}) {
     if (!pc) throw new Error('Peer connection not initialized');
 
     try {
-      const offer = await pc.createOffer(options);
+      const { audioReceiveTracks, ...offerOptions } = options || {};
+      ensureAudioReceiveTransceivers(pc, audioReceiveTracks);
+
+      const offer = await pc.createOffer(offerOptions);
       await pc.setLocalDescription(offer);
       console.log('[WebRTC] createOffer: localDescription set, sdp length=', offer.sdp?.length);
       return offer;
@@ -126,7 +175,7 @@ export function useWebRTC(config = {}) {
       console.error('[WebRTC] Failed to create offer:', error);
       throw error;
     }
-  }, []);
+  }, [ensureAudioReceiveTransceivers]);
 
   // Create answer
   const createAnswer = useCallback(async () => {
