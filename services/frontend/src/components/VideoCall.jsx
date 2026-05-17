@@ -15,6 +15,16 @@ function IconMic({ active = false, size = 20 }) {
   );
 }
 
+function IconLink({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+      <path d="M10.59 13.41a2 2 0 0 0 2.82 0l1.59-1.59a2 2 0 0 0 0-2.82 2 2 0 0 0-2.82 0L10.59 10.6a2 2 0 0 0 0 2.81z" stroke="#444" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M7.05 17.95a6 6 0 0 1 0-8.49l1.59-1.59" stroke="#444" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M16.95 6.05a6 6 0 0 1 0 8.49l-1.59 1.59" stroke="#444" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function IconEnd({ size = 20 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
@@ -399,14 +409,13 @@ export function VideoCall({
       }
     },
     onError: (error) => {
-      if (leavingRef.current) return;
       console.error('[Call] WebSocket error:', error);
       setError('Connection error');
     },
     onClose: () => {
       console.log('[Call] WebSocket closed');
     },
-    shouldReconnect: () => !sessionReplacedRef.current && !callUnavailableRef.current && !leavingRef.current
+    shouldReconnect: () => !sessionReplacedRef.current && !callUnavailableRef.current
   });
 
   const runEndSession = useCallback((message, notifyType = 'success') => {
@@ -501,7 +510,6 @@ export function VideoCall({
 
   // Handle end call
   const handleCallEnd = useCallback(async () => {
-    leavingRef.current = true;
     try {
       ws_send({
         type: 'end',
@@ -612,7 +620,7 @@ export function VideoCall({
           title="Копировать ссылку на встречу"
         >
           <span style={{display: 'inline-flex', alignItems: 'center', gap: 6}}>
-            <span aria-hidden="true">📋</span>
+            <IconLink />
             <span>{showCopyButton ? 'Скопировано!' : 'Ссылка'}</span>
           </span>
         </button>

@@ -152,50 +152,25 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
   }, [selectedRoomId, loadMessages, loadRoomDetails]);
 
   useEffect(() => {
-    if (!accessToken) {
-      return undefined;
-    }
-
-    const refreshRooms = () => {
-      if (document.hidden) {
-        return;
-      }
-      void loadRooms({ silent: true });
-    };
-
-    const timer = window.setInterval(refreshRooms, 2500);
-    window.addEventListener('focus', refreshRooms);
-    document.addEventListener('visibilitychange', refreshRooms);
-
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener('focus', refreshRooms);
-      document.removeEventListener('visibilitychange', refreshRooms);
-    };
-  }, [accessToken, loadRooms]);
-
-  useEffect(() => {
     if (!accessToken || !selectedRoomId) {
       return undefined;
     }
-
-    const refreshMessages = () => {
+    const refreshActiveChat = () => {
       if (document.hidden || selectedRoomIdRef.current !== selectedRoomId) {
         return;
       }
       void loadMessages(selectedRoomId, { silent: true });
+      void loadRooms({ silent: true });
     };
-
-    const timer = window.setInterval(refreshMessages, 2500);
-    window.addEventListener('focus', refreshMessages);
-    document.addEventListener('visibilitychange', refreshMessages);
-
+    const timer = window.setInterval(refreshActiveChat, 2500);
+    window.addEventListener('focus', refreshActiveChat);
+    document.addEventListener('visibilitychange', refreshActiveChat);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener('focus', refreshMessages);
-      document.removeEventListener('visibilitychange', refreshMessages);
+      window.removeEventListener('focus', refreshActiveChat);
+      document.removeEventListener('visibilitychange', refreshActiveChat);
     };
-  }, [accessToken, loadMessages, selectedRoomId]);
+  }, [accessToken, loadMessages, loadRooms, selectedRoomId]);
 
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -380,7 +355,7 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
 
       setAddParticipantQuery('');
       await loadRoomDetails(selectedRoomId);
-      await loadRooms({ silent: true });
+      await loadRooms();
       showNotification('Участник добавлен в чат', 'success');
     } catch (error) {
         const errMsg = String(error?.message || '').toLowerCase();
@@ -449,8 +424,9 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
         auth: true
       }, onUpdateAccessToken);
       await loadRoomDetails(selectedRoomId);
-      await loadRooms({ silent: true });
-      showNotification('Участник удален из чате', 'success');
+      await loadMessages(selectedRoomId);
+      await loadRooms();
+      showNotification('Участник удален из чата', 'success');
     } catch (error) {
       showNotification(error.message || 'Не удалось удалить участника', 'error');
     }
