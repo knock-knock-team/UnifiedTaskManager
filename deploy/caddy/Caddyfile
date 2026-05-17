@@ -1,0 +1,5 @@
+{$PUBLIC_DOMAIN:knock-knock-team.ru}, www.{$PUBLIC_DOMAIN:knock-knock-team.ru} {
+  encode zstd gzip
+
+  reverse_proxy nginx:80
+}
