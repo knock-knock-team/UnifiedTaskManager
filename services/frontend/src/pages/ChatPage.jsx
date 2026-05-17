@@ -358,7 +358,14 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
       await loadRooms();
       showNotification('Участник добавлен в чат', 'success');
     } catch (error) {
-      showNotification(error.message || 'Не удалось добавить участника', 'error');
+        const errMsg = String(error?.message || '').toLowerCase();
+        if (/не найден|not found|not exist|not exists/.test(errMsg)) {
+          showNotification('Пользователь не найден', 'error');
+        } else if (/неправил|invalid|bad request|invalid tag|invalid email|invalid name/.test(errMsg)) {
+          showNotification('Неправильное имя', 'error');
+        } else {
+          showNotification('Не удалось добавить участника', 'error');
+        }
     } finally {
       setIsAddingParticipant(false);
     }
@@ -516,7 +523,7 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
                   {isAddingParticipant ? '...' : 'Добавить'}
                 </button>
               </form>
-              <button type="button" className="ghost" onClick={() => void loadRooms()}>Обновить</button>
+              {/* Кнопка "Обновить" убрана — автoобновление активировано через таймер */}
             </div>
           </header>
 
