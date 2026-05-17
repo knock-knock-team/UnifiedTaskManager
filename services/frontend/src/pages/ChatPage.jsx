@@ -1,6 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { request } from '../lib/api';
 
+function sameMessageList(left, right) {
+  if (left.length !== right.length) return false;
+  return left.every((message, index) => {
+    const next = right[index];
+    return message.id === next?.id && message.body === next?.body && message.updatedAt === next?.updatedAt;
+  });
+}
+
 export function ChatPage({ accessToken, apiBase, profile, showNotification, onUpdateAccessToken }) {
   const [rooms, setRooms] = useState([]);
   const [selectedRoomId, setSelectedRoomId] = useState('');
@@ -31,9 +39,11 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
     selectedRoomIdRef.current = selectedRoomId;
   }, [selectedRoomId]);
 
-  const loadRooms = useCallback(async () => {
+  const loadRooms = useCallback(async ({ silent = false } = {}) => {
     if (!accessToken) return;
-    setIsLoadingRooms(true);
+    if (!silent) {
+      setIsLoadingRooms(true);
+    }
     try {
       const data = await request(apiBase, accessToken, '/v1/chats/rooms?limit=100&offset=0', { auth: true }, onUpdateAccessToken);
       const items = Array.isArray(data.items) ? data.items : [];
@@ -43,9 +53,13 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
         return items[0]?.id || '';
       });
     } catch (error) {
-      showNotification(error.message || 'Не удалось загрузить чаты', 'error');
+      if (!silent) {
+        showNotification(error.message || 'Не удалось загрузить чаты', 'error');
+      }
     } finally {
-      setIsLoadingRooms(false);
+      if (!silent) {
+        setIsLoadingRooms(false);
+      }
     }
   }, [accessToken, apiBase, onUpdateAccessToken, showNotification]);
 
@@ -87,7 +101,7 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
     }
   }, [accessToken, apiBase, onUpdateAccessToken]);
 
-  const loadMessages = useCallback(async (roomID) => {
+  const loadMessages = useCallback(async (roomID, { silent = false } = {}) => {
     if (!accessToken || !roomID) {
       setMessages([]);
       return;
@@ -102,16 +116,21 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
         preservedScrollTopRef.current = container.scrollTop;
       }
     }
-    setIsLoadingMessages(true);
+    if (!silent) {
+      setIsLoadingMessages(true);
+    }
     try {
       const data = await request(apiBase, accessToken, `/v1/chats/rooms/${encodeURIComponent(roomID)}/messages?limit=100&offset=0`, { auth: true }, onUpdateAccessToken);
       if (selectedRoomIdRef.current !== roomID) return;
-      setMessages(Array.isArray(data.items) ? data.items : []);
+      const nextMessages = Array.isArray(data.items) ? data.items : [];
+      setMessages((current) => (sameMessageList(current, nextMessages) ? current : nextMessages));
     } catch (error) {
       if (selectedRoomIdRef.current !== roomID) return;
-      showNotification(error.message || 'Не удалось загрузить сообщения', 'error');
+      if (!silent) {
+        showNotification(error.message || 'Не удалось загрузить сообщения', 'error');
+      }
     } finally {
-      if (selectedRoomIdRef.current === roomID) {
+      if (!silent && selectedRoomIdRef.current === roomID) {
         setIsLoadingMessages(false);
       }
     }
@@ -131,6 +150,27 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
     void loadRoomDetails(selectedRoomId);
     void loadMessages(selectedRoomId);
   }, [selectedRoomId, loadMessages, loadRoomDetails]);
+
+  useEffect(() => {
+    if (!accessToken || !selectedRoomId) {
+      return undefined;
+    }
+    const refreshActiveChat = () => {
+      if (document.hidden || selectedRoomIdRef.current !== selectedRoomId) {
+        return;
+      }
+      void loadMessages(selectedRoomId, { silent: true });
+      void loadRooms({ silent: true });
+    };
+    const timer = window.setInterval(refreshActiveChat, 2500);
+    window.addEventListener('focus', refreshActiveChat);
+    document.addEventListener('visibilitychange', refreshActiveChat);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshActiveChat);
+      document.removeEventListener('visibilitychange', refreshActiveChat);
+    };
+  }, [accessToken, loadMessages, loadRooms, selectedRoomId]);
 
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -329,11 +369,12 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
     if (room.title && String(room.title).trim()) return room.title;
     const participantNames = (room.participantIds || roomDetails?.participantIds || [])
       .filter((id) => id && id !== profile?.id)
-      .map((id) => userDirectory[id]?.name || userDirectory[id]?.tag || String(id).slice(0, 8));
+      .map((id) => userDirectory[id]?.name || userDirectory[id]?.tag)
+      .filter(Boolean);
     if (participantNames.length > 0) {
       return participantNames.join(', ');
     }
-    return `Личный диалог ${String(room.id || '').slice(0, 8)}`;
+    return 'Загружаем имена...';
   };
 
   const resolveUserLabel = (userId) => {
@@ -351,7 +392,7 @@ export function ChatPage({ accessToken, apiBase, profile, showNotification, onUp
     if (user?.name) {
       return user.name;
     }
-    return String(userId).slice(0, 8);
+    return 'Загружаем имя...';
   };
 
   const isRoomOwner = Boolean(roomDetails?.createdBy && roomDetails.createdBy === profile?.id);

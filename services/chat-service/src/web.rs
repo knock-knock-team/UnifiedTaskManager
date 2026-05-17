@@ -10,7 +10,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
-    domain::{ChatMessage, ChatRoom, ChatRoomDetails},
+    domain::{ChatMessage, ChatRoomDetails},
     error::AppError,
     metrics,
     AppState,
@@ -86,6 +86,7 @@ pub struct RoomSummaryResponse {
     pub id: Uuid,
     pub title: Option<String>,
     pub created_by: Uuid,
+    pub participant_ids: Vec<Uuid>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -125,14 +126,15 @@ pub struct MessageListResponse {
     pub items: Vec<MessageResponse>,
 }
 
-impl From<ChatRoom> for RoomSummaryResponse {
-    fn from(value: ChatRoom) -> Self {
+impl From<ChatRoomDetails> for RoomSummaryResponse {
+    fn from(value: ChatRoomDetails) -> Self {
         Self {
-            id: value.id,
-            title: value.title,
-            created_by: value.created_by,
-            created_at: value.created_at,
-            updated_at: value.updated_at,
+            id: value.room.id,
+            title: value.room.title,
+            created_by: value.room.created_by,
+            participant_ids: value.participant_ids,
+            created_at: value.room.created_at,
+            updated_at: value.room.updated_at,
         }
     }
 }

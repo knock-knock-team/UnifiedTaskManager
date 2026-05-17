@@ -88,11 +88,27 @@ impl ChatService {
         actor_id: Uuid,
         limit: i64,
         offset: i64,
-    ) -> Result<Vec<ChatRoom>, AppError> {
-        self.repo
+    ) -> Result<Vec<ChatRoomDetails>, AppError> {
+        let rooms = self
+            .repo
             .list_rooms_for_user(actor_id, limit, offset)
             .await
-            .map_err(AppError::Db)
+            .map_err(AppError::Db)?;
+
+        let mut details = Vec::with_capacity(rooms.len());
+        for room in rooms {
+            let participant_ids = self
+                .repo
+                .list_room_members(room.id)
+                .await
+                .map_err(AppError::Db)?;
+            details.push(ChatRoomDetails {
+                room,
+                participant_ids,
+            });
+        }
+
+        Ok(details)
     }
 
     pub async fn get_room(
