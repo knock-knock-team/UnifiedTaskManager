@@ -15,6 +15,8 @@ var ErrBadRequest = errors.New("bad request")
 var ErrForbidden = errors.New("forbidden")
 var ErrUpstream = errors.New("upstream dependency failed")
 
+const maxProjectActivityEvents = 25
+
 type CreateTaskInput struct {
 	Title          string
 	Description    string
@@ -178,6 +180,9 @@ func (s *TaskService) ListActivityByProject(projectID string, limit, offset int)
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
 		return nil, 0, ErrBadRequest
+	}
+	if limit <= 0 || limit > maxProjectActivityEvents {
+		limit = maxProjectActivityEvents
 	}
 	return s.listActivity(projectID, "", "", limit, offset)
 }
