@@ -135,6 +135,7 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   const editorBaseTaskRef = useRef(null);
   const editorDirtyRef = useRef(false);
   const confirmResolverRef = useRef(null);
+  const projectScopeRef = useRef({ teamId: selectedTeamId, projectId: selectedProjectId });
   const [calendarCursor, setCalendarCursor] = useState(() => new Date());
   const TASK_HISTORY_PAGE_SIZE = 25;
 
@@ -1029,16 +1030,23 @@ export function TasksPage({ accessToken, apiBase, taskApiBase, profile, showNoti
   useEffect(() => {
     storage.taskProjectId = selectedProjectId;
     storage.taskProjectName = activeProject?.name || activeProject?.title || '';
+    const previousScope = projectScopeRef.current;
+    const scopeChanged = previousScope.teamId !== selectedTeamId || previousScope.projectId !== selectedProjectId;
+    projectScopeRef.current = { teamId: selectedTeamId, projectId: selectedProjectId };
     if (!selectedProjectId || !selectedTeamId) {
       storage.taskProjectName = '';
       setTasks([]);
       setColumns([]);
       setProjectActivity([]);
       setTaskHistory([]);
-      closeTaskEditor();
+      if (scopeChanged) {
+        closeTaskEditor();
+      }
       return;
     }
-    closeTaskEditor();
+    if (scopeChanged) {
+      closeTaskEditor();
+    }
     void loadColumns(selectedTeamId, selectedProjectId);
     void loadTasks(selectedTeamId, selectedProjectId);
     void loadProjectActivity(selectedTeamId, selectedProjectId);
